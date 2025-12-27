@@ -1,0 +1,15 @@
+.DS_Store
+bin/
+build
+tmp
+*.so
+__debug_bin**
+# dont check in certs/keys/pems
+*.pem
+*.crt
+*.key
+*.rpm
+*.log
+*-code-quality-report.json
+# dont check in binaries of our builds (usually from agentic runs)
+/ctl
