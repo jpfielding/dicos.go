@@ -24,7 +24,7 @@ DICOS is a specialized variant of the DICOM standard designed for security scree
 ## Installation
 
 ```bash
-go get github.com/yourusername/dicos.go
+go get github.com/jpfielding/dicos.go
 ```
 
 ## Quick Start
@@ -36,7 +36,7 @@ package main
 
 import (
     "log"
-    "github.com/yourusername/dicos.go/pkg/dicos"
+    "github.com/jpfielding/dicos.go/pkg/dicos"
 )
 
 func main() {
@@ -73,7 +73,7 @@ package main
 import (
     "log"
     "os"
-    "github.com/yourusername/dicos.go/pkg/dicos"
+    "github.com/jpfielding/dicos.go/pkg/dicos"
 )
 
 func main() {
@@ -113,9 +113,9 @@ func main() {
 package main
 
 import (
-    "github.com/yourusername/dicos.go/pkg/dicos"
-    "github.com/yourusername/dicos.go/pkg/dicos/module"
-    "github.com/yourusername/dicos.go/pkg/dicos/transfer"
+    "github.com/jpfielding/dicos.go/pkg/dicos"
+    "github.com/jpfielding/dicos.go/pkg/dicos/module"
+    "github.com/jpfielding/dicos.go/pkg/dicos/transfer"
 )
 
 func main() {
