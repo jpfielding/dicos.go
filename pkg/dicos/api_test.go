@@ -1,8 +1,7 @@
 package dicos
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -54,8 +53,7 @@ func TestCTImage_WithCompression(t *testing.T) {
 	ct.Columns = 128
 
 	// Enable JPEG-LS compression (lossless)
-	ct.UseCompression = true
-	ct.CompressionCodec = "jpeg-ls"
+	ct.Codec = CodecJPEGLS
 
 	dataset, err := ct.GetDataset()
 	require.NoError(t, err)
@@ -194,12 +192,8 @@ func TestValidation_CTImage(t *testing.T) {
 // Read/Write Roundtrip Tests
 // ============================================================================
 
-// TestCTImage_WriteAndRead demonstrates writing to file and reading back.
+// TestCTImage_WriteAndRead demonstrates writing to buffer and reading back.
 func TestCTImage_WriteAndRead(t *testing.T) {
-	// Create temp directory
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "test.dcs")
-
 	// Create and write CT image
 	ct := NewCTImage()
 	ct.Patient.PatientID = "ROUNDTRIP-001"
@@ -216,15 +210,13 @@ func TestCTImage_WriteAndRead(t *testing.T) {
 	dataset, err := ct.GetDataset()
 	require.NoError(t, err)
 
-	// Write to file
-	f, err := os.Create(filePath)
-	require.NoError(t, err)
-	_, err = Write(f, dataset)
-	f.Close()
+	// Write to buffer
+	var buf bytes.Buffer
+	_, err = Write(&buf, dataset)
 	require.NoError(t, err)
 
-	// Read back
-	readDataset, err := ReadFile(filePath)
+	// Read back from buffer
+	readDataset, err := ReadBuffer(buf.Bytes())
 	require.NoError(t, err)
 	require.NotNil(t, readDataset)
 

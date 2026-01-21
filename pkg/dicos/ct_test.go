@@ -1,8 +1,7 @@
 package dicos_test
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
 	"testing"
 	"time"
 
@@ -26,17 +25,12 @@ func TestCTImage_Write(t *testing.T) {
 	}
 
 	ct.SetPixelData(rows, cols, data)
-	ct.UseCompression = false
+	ct.Codec = nil // uncompressed
 
-	// Use temp dir
-	tmpDir := t.TempDir()
-	tmpFile := filepath.Join(tmpDir, "test_ct.dcs")
-
-	_, err := ct.Write(tmpFile)
+	var buf bytes.Buffer
+	_, err := ct.WriteTo(&buf)
 	require.NoError(t, err, "Failed to write CT Image")
-
-	// Basic check if file exists
-	require.FileExists(t, tmpFile, "File was not created")
+	assert.Greater(t, buf.Len(), 0, "Should have written bytes")
 }
 
 func TestCTImage_WriteCompressed(t *testing.T) {
@@ -56,32 +50,26 @@ func TestCTImage_WriteCompressed(t *testing.T) {
 	ct.ContentDate = module.NewDate(time.Now())
 
 	// Write uncompressed
-	tmpDir := t.TempDir()
-	ct.UseCompression = false
-	uncompressedFile := filepath.Join(tmpDir, "test_ct_uncompressed.dcs")
-	_, err := ct.Write(uncompressedFile)
+	ct.Codec = nil
+	var uncompressedBuf bytes.Buffer
+	_, err := ct.WriteTo(&uncompressedBuf)
 	require.NoError(t, err, "Failed to write uncompressed CT")
 
 	// Write compressed
-	ct.UseCompression = true
-	compressedFile := filepath.Join(tmpDir, "test_ct_compressed.dcs")
-	_, err = ct.Write(compressedFile)
+	ct.Codec = dicos.CodecJPEGLS
+	var compressedBuf bytes.Buffer
+	_, err = ct.WriteTo(&compressedBuf)
 	require.NoError(t, err, "Failed to write compressed CT")
 
-	uncompStat, err := os.Stat(uncompressedFile)
-	require.NoError(t, err, "Failed to stat uncompressed file")
-	compStat, err := os.Stat(compressedFile)
-	require.NoError(t, err, "Failed to stat compressed file")
+	t.Logf("Uncompressed size: %d, Compressed size: %d", uncompressedBuf.Len(), compressedBuf.Len())
 
-	t.Logf("Uncompressed size: %d, Compressed size: %d", uncompStat.Size(), compStat.Size())
+	assert.Less(t, compressedBuf.Len(), uncompressedBuf.Len(),
+		"Compressed (%d) should be smaller than uncompressed (%d)",
+		compressedBuf.Len(), uncompressedBuf.Len())
 
-	assert.Less(t, compStat.Size(), uncompStat.Size(),
-		"Compressed file (%d) should be smaller than uncompressed file (%d)",
-		compStat.Size(), uncompStat.Size())
-
-	// Verify Transfer Syntax
-	ds, err := dicos.ReadFile(compressedFile)
-	require.NoError(t, err, "Failed to read back compressed file")
+	// Verify Transfer Syntax by reading back from buffer
+	ds, err := dicos.ReadBuffer(compressedBuf.Bytes())
+	require.NoError(t, err, "Failed to read back compressed data")
 
 	syntax := dicos.GetTransferSyntax(ds)
 	assert.Equal(t, dicos.JPEGLSLossless, syntax, "Expected JPEG-LS Lossless transfer syntax")

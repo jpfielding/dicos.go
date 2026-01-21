@@ -43,11 +43,10 @@ type CTImage struct {
 	PixelRepresent    uint16
 	Rows              int
 	Columns           int
-	RescaleIntercept  interface{} // float64 or string (DS)
-	RescaleSlope      interface{} // float64 or string (DS)
-	RescaleType       string
-	UseCompression    bool
-	CompressionCodec  string // "jpeg-ls" or "jpeg-li"
+	RescaleIntercept interface{} // float64 or string (DS)
+	RescaleSlope     interface{} // float64 or string (DS)
+	RescaleType      string
+	Codec            Codec // nil = uncompressed
 }
 
 // CTImageModule is a legacy simple container for CT Image module attributes
@@ -109,20 +108,12 @@ func (ct *CTImage) GetDataset() (*Dataset, error) {
 	opts := make([]Option, 0, 32)
 
 	// 1. Determine transfer syntax based on compression
-	// Check UseCompression flag OR if pixel data is already encapsulated
 	ts := string(transfer.ExplicitVRLittleEndian)
-	willCompress := ct.UseCompression || (ct.PixelData != nil && ct.PixelData.IsEncapsulated)
-	if willCompress {
-		switch ct.CompressionCodec {
-		case "jpeg-li":
-			ts = "1.2.840.10008.1.2.4.70" // JPEG Lossless Process 14 SV1
-		case "rle":
-			ts = "1.2.840.10008.1.2.5" // RLE Lossless
-		case "jpeg-2000", "jpeg2000":
-			ts = "1.2.840.10008.1.2.4.90" // JPEG 2000 Lossless Only
-		default:
-			ts = string(transfer.JPEGLSLossless)
-		}
+	if ct.Codec != nil {
+		ts = ct.Codec.TransferSyntaxUID()
+	} else if ct.PixelData != nil && ct.PixelData.IsEncapsulated {
+		// Already encapsulated data - use JPEG-LS as default
+		ts = string(transfer.JPEGLSLossless)
 	}
 
 	// 2. File Meta Information
@@ -181,9 +172,9 @@ func (ct *CTImage) GetDataset() (*Dataset, error) {
 	}
 
 	// 7. Pixel Data
-	if ct.UseCompression && ct.PixelData != nil && !ct.PixelData.IsEncapsulated {
+	if ct.Codec != nil && ct.PixelData != nil && !ct.PixelData.IsEncapsulated {
 		flatData := ct.PixelData.GetFlatData()
-		opts = append(opts, WithPixelData(ct.Rows, ct.Columns, int(ct.BitsAllocated), flatData, true, ct.CompressionCodec))
+		opts = append(opts, WithPixelData(ct.Rows, ct.Columns, int(ct.BitsAllocated), flatData, ct.Codec))
 	} else if ct.PixelData != nil {
 		opts = append(opts, WithRawPixelData(ct.PixelData))
 	}

@@ -46,8 +46,8 @@ type DXImage struct {
 	PresentationIntentType string // PRESENTATION or PROCESSING
 
 	// Pixel Data
-	PixelData      []uint16
-	UseCompression bool
+	PixelData []uint16
+	Codec     Codec // nil = uncompressed
 
 	// Additional Tags (Generic support for tags not explicitly defined)
 	AdditionalTags map[tag.Tag]interface{}
@@ -90,8 +90,8 @@ func (dx *DXImage) GetDataset() (*Dataset, error) {
 
 	// 1. File Meta Information
 	tsUID := string(transfer.ExplicitVRLittleEndian)
-	if dx.UseCompression {
-		tsUID = string(transfer.JPEGLSLossless)
+	if dx.Codec != nil {
+		tsUID = dx.Codec.TransferSyntaxUID()
 	}
 
 	sopInstanceUID := dx.SOPCommon.SOPInstanceUID
@@ -147,7 +147,7 @@ func (dx *DXImage) GetDataset() (*Dataset, error) {
 	}
 
 	// 4. Pixel Data
-	opts = append(opts, WithPixelData(dx.Rows, dx.Columns, dx.BitsAllocated, dx.PixelData, dx.UseCompression, ""))
+	opts = append(opts, WithPixelData(dx.Rows, dx.Columns, dx.BitsAllocated, dx.PixelData, dx.Codec))
 
 	return NewDataset(opts...)
 }

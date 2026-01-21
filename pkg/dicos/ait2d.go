@@ -40,9 +40,8 @@ type AIT2DImage struct {
 	ScannerType   string  // MILLIMETER_WAVE, BACKSCATTER
 
 	// Pixel Data
-	PixelData        []uint16
-	UseCompression   bool
-	CompressionCodec string
+	PixelData []uint16
+	Codec     Codec // nil = uncompressed
 }
 
 // NewAIT2DImage creates a new AIT 2D Image with defaults
@@ -83,20 +82,13 @@ func (ait *AIT2DImage) GetDataset() (*Dataset, error) {
 	ait.SOPCommon.SOPClassUID = DICOSAIT2DImageStorageUID
 
 	// Transfer syntax
-	ts := transfer.ExplicitVRLittleEndian
-	if ait.UseCompression {
-		switch ait.CompressionCodec {
-		case "jpeg-li":
-			ts = "1.2.840.10008.1.2.4.70"
-		case "rle":
-			ts = "1.2.840.10008.1.2.5"
-		default:
-			ts = transfer.JPEGLSLossless
-		}
+	ts := string(transfer.ExplicitVRLittleEndian)
+	if ait.Codec != nil {
+		ts = ait.Codec.TransferSyntaxUID()
 	}
 
 	// File Meta
-	opts = append(opts, WithFileMeta(DICOSAIT2DImageStorageUID, sopInstanceUID, string(ts)))
+	opts = append(opts, WithFileMeta(DICOSAIT2DImageStorageUID, sopInstanceUID, ts))
 
 	// Modules
 	opts = append(opts,
@@ -133,7 +125,7 @@ func (ait *AIT2DImage) GetDataset() (*Dataset, error) {
 
 	// Pixel Data
 	if len(ait.PixelData) > 0 {
-		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, ait.PixelData, ait.UseCompression, ait.CompressionCodec))
+		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, ait.PixelData, ait.Codec))
 	}
 
 	return NewDataset(opts...)

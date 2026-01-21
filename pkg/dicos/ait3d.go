@@ -42,9 +42,8 @@ type AIT3DImage struct {
 	ScannerType      string // MILLIMETER_WAVE, BACKSCATTER
 
 	// Volumetric Data
-	PixelData        *PixelData
-	UseCompression   bool
-	CompressionCodec string
+	PixelData *PixelData
+	Codec     Codec // nil = uncompressed
 }
 
 // NewAIT3DImage creates a new AIT 3D Image with defaults
@@ -108,20 +107,13 @@ func (ait *AIT3DImage) GetDataset() (*Dataset, error) {
 	ait.SOPCommon.SOPClassUID = DICOSAIT3DImageStorageUID
 
 	// Transfer syntax
-	ts := transfer.ExplicitVRLittleEndian
-	if ait.UseCompression {
-		switch ait.CompressionCodec {
-		case "jpeg-li":
-			ts = "1.2.840.10008.1.2.4.70"
-		case "rle":
-			ts = "1.2.840.10008.1.2.5"
-		default:
-			ts = transfer.JPEGLSLossless
-		}
+	ts := string(transfer.ExplicitVRLittleEndian)
+	if ait.Codec != nil {
+		ts = ait.Codec.TransferSyntaxUID()
 	}
 
 	// File Meta
-	opts = append(opts, WithFileMeta(DICOSAIT3DImageStorageUID, sopInstanceUID, string(ts)))
+	opts = append(opts, WithFileMeta(DICOSAIT3DImageStorageUID, sopInstanceUID, ts))
 
 	// Modules
 	opts = append(opts,

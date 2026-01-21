@@ -7,10 +7,6 @@ import (
 	"image/color"
 	"log/slog"
 
-	"github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
-	jpegli "github.com/jpfielding/dicos.go/pkg/compress/jpegli"
-	jpegls "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
-	"github.com/jpfielding/dicos.go/pkg/compress/rle"
 	"github.com/jpfielding/dicos.go/pkg/dicos/module"
 	"github.com/jpfielding/dicos.go/pkg/dicos/tag"
 )
@@ -88,7 +84,9 @@ func WithModule(tags []module.IODElement) Option {
 }
 
 // WithPixelData adds pixel data, either native or compressed
-func WithPixelData(rows, cols, bitsAllocated int, data []uint16, compress bool, codec string) Option {
+// If codec is nil, data is stored uncompressed (native)
+// If codec is non-nil, data is compressed using the specified codec
+func WithPixelData(rows, cols, bitsAllocated int, data []uint16, codec Codec) Option {
 	return func(ds *Dataset) error {
 		if len(data) == 0 {
 			return nil
@@ -96,6 +94,7 @@ func WithPixelData(rows, cols, bitsAllocated int, data []uint16, compress bool, 
 
 		pixelsPerFrame := rows * cols
 		numFrames := len(data) / pixelsPerFrame
+		compress := codec != nil
 
 		pd := &PixelData{
 			IsEncapsulated: compress,
@@ -113,9 +112,10 @@ func WithPixelData(rows, cols, bitsAllocated int, data []uint16, compress bool, 
 				sliceData := data[start:end]
 
 				var buf bytes.Buffer
+				var img image.Image
 
 				if bitsAllocated > 8 {
-					img := image.NewGray16(image.Rect(0, 0, cols, rows))
+					gray16 := image.NewGray16(image.Rect(0, 0, cols, rows))
 
 					if i == 0 && len(sliceData) > 10 {
 						slog.Debug("ENCODE Frame 0", "first_pixels_subset", sliceData[:10])
@@ -124,45 +124,21 @@ func WithPixelData(rows, cols, bitsAllocated int, data []uint16, compress bool, 
 					for j, val := range sliceData {
 						x := j % cols
 						y := j / cols
-						img.SetGray16(x, y, color.Gray16{Y: val})
+						gray16.SetGray16(x, y, color.Gray16{Y: val})
 					}
-
-					var err error
-					switch codec {
-					case "jpeg-li":
-						err = jpegli.Encode(&buf, img, nil)
-					case "rle":
-						err = rle.Encode(&buf, img)
-					case "jpeg-2000", "jpeg2000":
-						err = jpeg2k.Encode(&buf, img, nil)
-					default:
-						err = jpegls.Encode(&buf, img, nil)
-					}
-					if err != nil {
-						return fmt.Errorf("%s encode error (16-bit): %w", codec, err)
-					}
+					img = gray16
 				} else {
-					img := image.NewGray(image.Rect(0, 0, cols, rows))
+					gray8 := image.NewGray(image.Rect(0, 0, cols, rows))
 					for j, val := range sliceData {
 						x := j % cols
 						y := j / cols
-						img.SetGray(x, y, color.Gray{Y: uint8(val)})
+						gray8.SetGray(x, y, color.Gray{Y: uint8(val)})
 					}
+					img = gray8
+				}
 
-					var err error
-					switch codec {
-					case "jpeg-li":
-						err = jpegli.Encode(&buf, img, nil)
-					case "rle":
-						err = rle.Encode(&buf, img)
-					case "jpeg-2000", "jpeg2000":
-						err = jpeg2k.Encode(&buf, img, nil)
-					default:
-						err = jpegls.Encode(&buf, img, nil)
-					}
-					if err != nil {
-						return fmt.Errorf("%s encode error (8-bit): %w", codec, err)
-					}
+				if err := codec.Encode(&buf, img); err != nil {
+					return fmt.Errorf("%s encode error: %w", codec.Name(), err)
 				}
 
 				compressedData := buf.Bytes()

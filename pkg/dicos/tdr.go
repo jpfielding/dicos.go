@@ -33,8 +33,7 @@ type ThreatDetectionReport struct {
 	PTOs []PotentialThreatObject
 
 	// Configuration
-	UseCompression   bool
-	CompressionCodec string
+	Codec Codec // nil = uncompressed
 }
 
 // PotentialThreatObject represents a detected threat
@@ -82,22 +81,13 @@ func (tdr *ThreatDetectionReport) GetDataset() (*Dataset, error) {
 	tdr.SOPCommon.SOPClassUID = DICOSTDRStorageUID
 
 	// TDR Storage - transfer syntax
-	ts := transfer.ExplicitVRLittleEndian
-	if tdr.UseCompression {
-		switch tdr.CompressionCodec {
-		case "jpeg-li":
-			ts = "1.2.840.10008.1.2.4.70"
-		case "rle":
-			ts = "1.2.840.10008.1.2.5"
-		case "jpeg-2000", "jpeg2000":
-			ts = "1.2.840.10008.1.2.4.90"
-		default:
-			ts = transfer.JPEGLSLossless
-		}
+	ts := string(transfer.ExplicitVRLittleEndian)
+	if tdr.Codec != nil {
+		ts = tdr.Codec.TransferSyntaxUID()
 	}
 
 	// File Meta
-	opts = append(opts, WithFileMeta(DICOSTDRStorageUID, sopInstanceUID, string(ts)))
+	opts = append(opts, WithFileMeta(DICOSTDRStorageUID, sopInstanceUID, ts))
 
 	// Modules
 	opts = append(opts,

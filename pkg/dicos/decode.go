@@ -1,15 +1,9 @@
 package dicos
 
 import (
-	"bytes"
 	"fmt"
 	"image"
 	"log/slog"
-
-	jpeg2k "github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
-	jpegli "github.com/jpfielding/dicos.go/pkg/compress/jpegli"
-	jpegls "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
-	rle "github.com/jpfielding/dicos.go/pkg/compress/rle"
 )
 
 // DecodeVolume decodes all frames from a Dataset into a Volume
@@ -100,76 +94,50 @@ func DecodeVolume(ds *Dataset) (*Volume, error) {
 
 // decodeCompressedFrame detects compression type and decodes
 func decodeCompressedFrame(data []byte, rows, cols int, ts TransferSyntax) (image.Image, error) {
-	if len(data) < 12 && len(data) < 64 { // Allow short data implies not RLE/JPEG anyway, but RLE header check is inside
-		// RLE header is 64 bytes. JPEG header is small but valid stream is > 12 usually.
-		if len(data) < 2 {
-			return nil, fmt.Errorf("compressed data too short: %d bytes", len(data))
-		}
+	if len(data) < 2 {
+		return nil, fmt.Errorf("compressed data too short: %d bytes", len(data))
 	}
 
-	// 1. Use Transfer Syntax if available
+	// 1. Use Transfer Syntax if available via codec registry
 	tsUID := string(ts)
-	if tsUID == "1.2.840.10008.1.2.4.70" { // JPEG Lossless
-		return jpegli.Decode(bytes.NewReader(data))
-	}
-	if tsUID == "1.2.840.10008.1.2.5" { // RLE Lossless
-		return rle.Decode(data, cols, rows)
-	}
-	if tsUID == "1.2.840.10008.1.2.4.90" { // JPEG 2000
-		return jpeg2k.Decode(bytes.NewReader(data))
-	}
-	// JPEGLS: 1.2.840.10008.1.2.4.80 or .81
-	if tsUID == "1.2.840.10008.1.2.4.80" || tsUID == "1.2.840.10008.1.2.4.81" {
-		return jpegls.Decode(bytes.NewReader(data))
+	if codec := CodecByTransferSyntax(tsUID); codec != nil {
+		return codec.Decode(data, cols, rows)
 	}
 
 	// 2. Fallback to sniffing if TS is unknown or generic
-	// Check for JPEG SOI marker
-	isJPEGLS := false
-	isJPEGLossless := false
-	isJ2K := false
+	var sniffedCodec Codec
 
 	// Strict check for JPEG SOI (FF D8) or J2K SOC (FF 4F) at start
 	if len(data) > 2 {
-		if data[0] == 0xFF && data[1] == 0xF7 {
-			// JPEGLS might lack SOI? No standard says FF D8.
-			// But existing code checked for F7 anywhere.
-		}
-
-		// Scan only if starts with FF D8
+		// Scan only if starts with FF D8 (JPEG)
 		if data[0] == 0xFF && data[1] == 0xD8 {
-			// Scan for SOF
+			// Scan for SOF marker to distinguish JPEG-LS vs JPEG Lossless
 			for i := 0; i < len(data)-1; i++ {
 				if data[i] == 0xFF {
 					switch data[i+1] {
-					case 0xF7:
-						isJPEGLS = true
-					case 0xC3:
-						isJPEGLossless = true
+					case 0xF7: // SOF55 - JPEG-LS
+						sniffedCodec = CodecJPEGLS
+					case 0xC3: // SOF3 - JPEG Lossless
+						sniffedCodec = CodecJPEGLi
+					}
+					if sniffedCodec != nil {
+						break
 					}
 				}
 			}
 		} else if data[0] == 0xFF && data[1] == 0x4F {
-			isJ2K = true
+			// J2K SOC marker
+			sniffedCodec = CodecJPEG2000
 		}
 	}
 
-	if isJPEGLS {
-		return jpegls.Decode(bytes.NewReader(data))
+	if sniffedCodec != nil {
+		return sniffedCodec.Decode(data, cols, rows)
 	}
 
-	if isJPEGLossless {
-		return jpegli.Decode(bytes.NewReader(data))
-	}
-
-	if isJ2K {
-		return jpeg2k.Decode(bytes.NewReader(data))
-	}
-
-	// Check for RLE
-	// RLE Header is 64 bytes. First 4 bytes = uint32 segment count.
+	// Check for RLE (header is 64 bytes)
 	if len(data) >= 64 {
-		img, err := rle.Decode(data, cols, rows)
+		img, err := CodecRLE.Decode(data, cols, rows)
 		if err == nil {
 			return img, nil
 		}
@@ -182,12 +150,12 @@ func decodeCompressedFrame(data []byte, rows, cols int, ts TransferSyntax) (imag
 	}
 
 	// Fallback: Try JPEG Lossless first (more common in DICOM), then JPEG-LS
-	img, err := jpegli.Decode(bytes.NewReader(data))
+	img, err := CodecJPEGLi.Decode(data, cols, rows)
 	if err == nil {
 		return img, nil
 	}
 
-	return jpegls.Decode(bytes.NewReader(data))
+	return CodecJPEGLS.Decode(data, cols, rows)
 }
 
 // DecodeFrameData decodes a single frame from pixel data

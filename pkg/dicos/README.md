@@ -96,8 +96,7 @@ The package supports all standard DICOM VRs:
 ct := dicos.NewCTImage()
 ct.Patient.PatientID = "BAG-001"
 ct.SetPixelData(512, 512, volumeData)
-ct.UseCompression = true
-ct.CompressionCodec = "jpeg-ls"
+ct.Codec = dicos.CodecJPEGLS // nil for uncompressed
 ct.Write("output.dcs")
 ```
 
@@ -265,8 +264,7 @@ ct.Patient.PatientID = "SCAN-001"
 ct.Study.StudyDescription = "Baggage Scan"
 ct.Series.SeriesDescription = "High Energy"
 ct.SetPixelData(512, 512, volumeData)
-ct.UseCompression = true
-ct.CompressionCodec = "jpeg-ls" // or "jpeg-li", "rle", "jpeg-2000"
+ct.Codec = dicos.CodecJPEGLS // or CodecJPEGLi, CodecRLE, CodecJPEG2000
 ct.Write("output.dcs")
 
 // Using functional options for custom datasets
@@ -275,7 +273,7 @@ ds, err := dicos.NewDataset(
     dicos.WithElement(tag.PatientID, "PATIENT-001"),
     dicos.WithElement(tag.Rows, 512),
     dicos.WithElement(tag.Columns, 512),
-    dicos.WithPixelData(512, 512, 16, pixelData, true, "jpeg-ls"),
+    dicos.WithPixelData(512, 512, 16, pixelData, dicos.CodecJPEGLS),
 )
 dicos.WriteFile("custom.dcs", ds)
 ```
