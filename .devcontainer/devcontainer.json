@@ -13,6 +13,8 @@
       "extensions": [
         "golang.go",
         "ms-vscode.hexeditor",
+        "GitHub.copilot-chat",
+        "Google.geminicodeassist",
         "Anthropic.claude-code"
       ]
     }
