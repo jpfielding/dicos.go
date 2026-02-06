@@ -70,7 +70,22 @@ func NewAIT3DImage() *AIT3DImage {
 	}
 }
 
-// SetPixelData sets native pixel data for 3D volume
+// SetPixelData sets native pixel data for 3D volumetric AIT image.
+//
+// Unlike 2D images, AIT3D requires explicit frame count specification since
+// volumetric data dimensions are not automatically inferrable.
+//
+// Parameters:
+//   - rows: Slice height in pixels
+//   - cols: Slice width in pixels
+//   - frames: Number of slices in the volume
+//   - data: Pixel values in row-major order (left-to-right, top-to-bottom, slice-by-slice)
+//
+// To compress the pixel data, set ait.Codec before calling GetDataset():
+//
+//	ait.SetPixelData(256, 256, 100, volumeData) // 100 slices
+//	ait.Codec = dicos.CodecJPEGLS
+//	ait.Write("output.dcs")
 func (ait *AIT3DImage) SetPixelData(rows, cols, frames int, data []uint16) {
 	ait.Rows = rows
 	ait.Columns = cols
@@ -156,7 +171,10 @@ func (ait *AIT3DImage) GetDataset() (*Dataset, error) {
 	// SurfaceType, CoordinateSystem, ScannerType
 
 	// Pixel Data
-	if ait.PixelData != nil {
+	if ait.Codec != nil && ait.PixelData != nil && !ait.PixelData.IsEncapsulated {
+		flatData := ait.PixelData.GetFlatData()
+		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, flatData, ait.Codec))
+	} else if ait.PixelData != nil {
 		opts = append(opts, WithRawPixelData(ait.PixelData))
 	}
 

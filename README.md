@@ -54,14 +54,24 @@ func main() {
     }
 
     // Extract pixel data
-    pixelData, err := dicos.GetPixelData(ds)
+    pixelData, err := ds.GetPixelData()
     if err != nil {
         log.Fatal(err)
     }
 
+    // Check if data is compressed
+    if pixelData.IsEncapsulated {
+        log.Println("Pixel data is compressed (encapsulated)")
+        // Decompress if needed
+        pixelData, err = dicos.DecompressPixelData(ds, pixelData)
+        if err != nil {
+            log.Fatal(err)
+        }
+    }
+
     // Get rescale parameters for Hounsfield Units
-    slope, intercept := dicos.GetRescale(ds)
-    log.Printf("Rescale: slope=%.2f, intercept=%.2f", slope, intercept)
+    intercept, slope := dicos.GetRescale(ds)
+    log.Printf("Rescale: intercept=%.2f, slope=%.2f", intercept, slope)
 }
 ```
 
@@ -79,31 +89,34 @@ import (
 func main() {
     // Create a new CT image with builder
     ct := dicos.NewCTImage()
+
+    // Set patient information
     ct.Patient.PatientID = "BAG-001"
-    ct.Patient.PatientName = "Anonymous"
+    ct.Patient.SetPatientName("Anonymous", "Baggage", "", "", "")
+
+    // Set image dimensions and parameters
     ct.Rows = 512
     ct.Columns = 512
-    ct.SliceThickness = 1.0
-    ct.PixelData = make([]uint16, 512*512) // Your pixel data here
-    ct.UseCompression = true
-    ct.CompressionCodec = "jpeg-ls"
+    ct.CTImageMod.SliceThickness = "1.0"
+    ct.CTImageMod.KVP = "120"
 
-    // Build the dataset
-    ds, err := ct.GetDataset()
+    // Generate pixel data (example: gradient)
+    pixelData := make([]uint16, 512*512)
+    for i := range pixelData {
+        pixelData[i] = uint16(i % 65536)
+    }
+
+    // Set pixel data and enable JPEG-LS compression
+    ct.SetPixelData(512, 512, pixelData)
+    ct.Codec = dicos.CodecJPEGLS // Compress using JPEG-LS (recommended for DICOS)
+
+    // Write directly to file (calls GetDataset internally)
+    _, err := ct.Write("output.dcs")
     if err != nil {
         log.Fatal(err)
     }
 
-    // Write to file
-    f, err := os.Create("output.dcs")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer f.Close()
-
-    if err := dicos.Write(f, ds); err != nil {
-        log.Fatal(err)
-    }
+    log.Println("DICOS file written successfully")
 }
 ```
 
@@ -119,25 +132,111 @@ import (
 )
 
 func main() {
-    patient := module.Patient{
-        PatientID:   "BAG-001",
-        PatientName: "Anonymous",
+    // Create modules
+    patient := &module.PatientModule{}
+    patient.PatientID = "BAG-001"
+    patient.SetPatientName("Anonymous", "Baggage", "", "", "")
+
+    study := &module.GeneralStudyModule{}
+    study.StudyInstanceUID = dicos.GenerateUID("1.2.826.0.1.3680043.8.498.")
+    study.StudyDate = module.NewDate(time.Now())
+
+    // Generate pixel data
+    pixelData := make([]uint16, 512*512)
+    for i := range pixelData {
+        pixelData[i] = uint16(i % 65536)
     }
 
+    // Build dataset with functional options
     ds, err := dicos.NewDataset(
         dicos.WithFileMeta(
-            "1.2.840.10008.5.1.4.1.1.2", // CT Image SOP Class UID
-            "1.2.3.4.5.6.7.8.9",          // SOP Instance UID
-            transfer.ExplicitVRLittleEndian,
+            dicos.DICOSCTImageStorageUID,
+            dicos.GenerateUID("1.2.826.0.1.3680043.8.498."),
+            dicos.JPEGLSLossless, // Transfer syntax for JPEG-LS
         ),
         dicos.WithModule(patient.ToTags()),
-        dicos.WithPixelData(512, 512, 16, pixelData, true, "jpeg-ls"),
+        dicos.WithModule(study.ToTags()),
+        dicos.WithPixelData(512, 512, 16, pixelData, dicos.CodecJPEGLS), // Codec as last param
     )
     if err != nil {
         log.Fatal(err)
     }
+
+    // Write to file
+    f, _ := os.Create("output.dcs")
+    defer f.Close()
+    dicos.Write(f, ds)
 }
 ```
+
+## Error Handling
+
+The library follows Go conventions for error handling. Most functions return errors that should be checked:
+
+```go
+// Reading files
+ds, err := dicos.ReadFile("scan.dcs")
+if err != nil {
+    // Common errors:
+    // - File not found
+    // - Invalid DICOM format (missing preamble or DICM magic)
+    // - Corrupt or truncated data
+    log.Fatalf("Failed to read DICOS file: %v", err)
+}
+
+// Extracting pixel data
+pd, err := ds.GetPixelData()
+if err != nil {
+    // Common errors:
+    // - PixelData element not found
+    // - Invalid pixel data type
+    // - Dimension mismatch (truncated frames)
+    log.Fatalf("Failed to extract pixel data: %v", err)
+}
+
+// Decompressing pixel data
+if pd.IsEncapsulated {
+    pd, err = dicos.DecompressPixelData(ds, pd)
+    if err != nil {
+        // Common errors:
+        // - Unsupported transfer syntax
+        // - Corrupt compressed data
+        // - Codec decoding failure
+        log.Fatalf("Failed to decompress pixel data: %v", err)
+    }
+}
+
+// Building datasets
+ds, err := dicos.NewDataset(
+    dicos.WithFileMeta(sopClass, sopInstance, transferSyntax),
+    // ... more options
+)
+if err != nil {
+    // Common errors:
+    // - Invalid option values
+    // - Compression codec errors
+    log.Fatalf("Failed to build dataset: %v", err)
+}
+
+// Writing files
+_, err = ct.Write("output.dcs")
+if err != nil {
+    // Common errors:
+    // - Permission denied
+    // - Disk full
+    // - Invalid dataset (missing required elements)
+    log.Fatalf("Failed to write DICOS file: %v", err)
+}
+```
+
+### Error Types
+
+- **File I/O Errors**: Standard Go file errors (os.ErrNotExist, os.ErrPermission, etc.)
+- **Parse Errors**: `fmt.Errorf` with context about what failed (e.g., "invalid DICM magic")
+- **Validation Errors**: Missing or invalid required DICOM elements
+- **Codec Errors**: Compression/decompression failures with codec-specific details
+
+All errors include contextual information to help diagnose issues. Use `fmt.Errorf` wrapping to preserve error chains.
 
 ## Command-Line Tool
 

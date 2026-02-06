@@ -40,7 +40,7 @@ type AIT2DImage struct {
 	ScannerType   string  // MILLIMETER_WAVE, BACKSCATTER
 
 	// Pixel Data
-	PixelData []uint16
+	PixelData *PixelData
 	Codec     Codec // nil = uncompressed
 }
 
@@ -63,11 +63,48 @@ func NewAIT2DImage() *AIT2DImage {
 	}
 }
 
-// SetPixelData sets the raw pixel data
+// SetPixelData sets native pixel data for the AIT 2D image.
+//
+// This method handles both single-frame and multi-frame images automatically.
+// If len(data) > rows*cols, it splits the data into multiple frames.
+//
+// Parameters:
+//   - rows: Image height in pixels
+//   - cols: Image width in pixels
+//   - data: Pixel values in row-major order (left-to-right, top-to-bottom)
+//
+// To compress the pixel data, set ait.Codec before calling GetDataset():
+//
+//	ait.SetPixelData(512, 512, pixelData)
+//	ait.Codec = dicos.CodecJPEGLS
+//	ait.Write("output.dcs")
 func (ait *AIT2DImage) SetPixelData(rows, cols int, data []uint16) {
 	ait.Rows = rows
 	ait.Columns = cols
-	ait.PixelData = data
+
+	pixelsPerFrame := rows * cols
+	numFrames := len(data) / pixelsPerFrame
+	if numFrames < 1 {
+		numFrames = 1
+	}
+
+	pd := &PixelData{
+		IsEncapsulated: false,
+		Frames:         make([]Frame, numFrames),
+	}
+
+	for i := 0; i < numFrames; i++ {
+		start := i * pixelsPerFrame
+		end := start + pixelsPerFrame
+		if end > len(data) {
+			end = len(data)
+		}
+
+		frameData := make([]uint16, end-start)
+		copy(frameData, data[start:end])
+		pd.Frames[i] = Frame{Data: frameData}
+	}
+	ait.PixelData = pd
 }
 
 // GetDataset builds and returns the DICOS Dataset
@@ -124,8 +161,11 @@ func (ait *AIT2DImage) GetDataset() (*Dataset, error) {
 	// BodyRegion, PrivacyMask, ScanViewAngle, ScannerType
 
 	// Pixel Data
-	if len(ait.PixelData) > 0 {
-		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, ait.PixelData, ait.Codec))
+	if ait.Codec != nil && ait.PixelData != nil && !ait.PixelData.IsEncapsulated {
+		flatData := ait.PixelData.GetFlatData()
+		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, flatData, ait.Codec))
+	} else if ait.PixelData != nil {
+		opts = append(opts, WithRawPixelData(ait.PixelData))
 	}
 
 	return NewDataset(opts...)

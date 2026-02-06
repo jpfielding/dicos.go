@@ -11,7 +11,46 @@ import (
 	"github.com/jpfielding/dicos.go/pkg/compress/rle"
 )
 
-// Codec defines the interface for DICOS pixel data compression
+// Codec defines the interface for DICOS pixel data compression and decompression.
+//
+// DICOS uses various compression codecs to reduce file size while maintaining image
+// quality for security screening applications. Each codec has different characteristics
+// for compression ratio, speed, and quality.
+//
+// Supported Codecs:
+//
+//   - JPEG-LS (Recommended for DICOS):
+//     Lossless/near-lossless compression with excellent ratio for medical imaging.
+//     Specified by NEMA DICOS standard. Use CodecJPEGLS.
+//
+//   - JPEG Lossless (Process 14):
+//     Older lossless JPEG variant with predictive coding. Use CodecJPEGLi.
+//
+//   - RLE (Run-Length Encoding):
+//     Simple lossless compression, fast but lower ratios. Use CodecRLE.
+//
+//   - JPEG 2000:
+//     Wavelet-based compression with lossless/lossy modes. Use CodecJPEG2000.
+//
+// Example - Using a codec:
+//
+//	ct := dicos.NewCTImage()
+//	ct.SetPixelData(512, 512, pixelData)
+//	ct.Codec = dicos.CodecJPEGLS // Compress using JPEG-LS
+//	ct.Write("output.dcs")
+//
+// Example - Decoding compressed pixel data:
+//
+//	ds, _ := dicos.ReadFile("scan.dcs")
+//	pd, _ := ds.GetPixelData()
+//	if pd.IsEncapsulated {
+//		ts := dicos.GetTransferSyntax(ds)
+//		codec := dicos.CodecByTransferSyntax(ts.UID())
+//		for i, frame := range pd.Frames {
+//			img, err := codec.Decode(frame.CompressedData, 512, 512)
+//			// Process decompressed image...
+//		}
+//	}
 type Codec interface {
 	// Encode compresses an image to the writer
 	Encode(w io.Writer, img image.Image) error
@@ -118,20 +157,62 @@ var codecsByTS = map[string]Codec{
 	"1.2.840.10008.1.2.4.90": &jpeg2kCodec{},  // JPEG 2000 Lossless
 }
 
-// Predefined codec instances for convenience
+// Predefined codec instances for convenience.
+//
+// Use these when configuring compression for DICOS images:
+//
+//	ct.Codec = dicos.CodecJPEGLS // Recommended for DICOS
+//	dx.Codec = dicos.CodecRLE    // Fast lossless compression
+//
+// CodecJPEGLS is the recommended choice for DICOS per NEMA standards, providing
+// excellent compression ratios with lossless quality.
 var (
-	CodecJPEGLS   Codec = codecsByName["jpeg-ls"]
-	CodecJPEGLi   Codec = codecsByName["jpeg-li"]
-	CodecRLE      Codec = codecsByName["rle"]
-	CodecJPEG2000 Codec = codecsByName["jpeg-2000"]
+	CodecJPEGLS   Codec = codecsByName["jpeg-ls"]   // JPEG-LS Lossless (recommended)
+	CodecJPEGLi   Codec = codecsByName["jpeg-li"]   // JPEG Lossless Process 14
+	CodecRLE      Codec = codecsByName["rle"]       // RLE Lossless
+	CodecJPEG2000 Codec = codecsByName["jpeg-2000"] // JPEG 2000 Lossless
 )
 
-// CodecByName returns a codec by name, or nil if not found
+// CodecByName returns a codec by its name identifier.
+//
+// Supported names:
+//   - "jpeg-ls" - JPEG-LS Lossless (recommended for DICOS)
+//   - "jpeg-li" - JPEG Lossless First-Order (Process 14)
+//   - "rle" - RLE Lossless
+//   - "jpeg-2000", "jpeg2000" - JPEG 2000 Lossless
+//
+// Returns nil if the codec name is not recognized.
+//
+// Example:
+//
+//	codec := dicos.CodecByName("jpeg-ls")
+//	if codec == nil {
+//		log.Fatal("Unknown codec")
+//	}
 func CodecByName(name string) Codec {
 	return codecsByName[name]
 }
 
-// CodecByTransferSyntax returns a codec for a transfer syntax, or nil if not found
+// CodecByTransferSyntax returns a codec for the given DICOM Transfer Syntax UID.
+//
+// Supported transfer syntaxes:
+//   - "1.2.840.10008.1.2.4.80" - JPEG-LS Lossless
+//   - "1.2.840.10008.1.2.4.81" - JPEG-LS Near-Lossless
+//   - "1.2.840.10008.1.2.4.70" - JPEG Lossless First-Order (Process 14)
+//   - "1.2.840.10008.1.2.5" - RLE Lossless
+//   - "1.2.840.10008.1.2.4.90" - JPEG 2000 Lossless
+//
+// Returns nil if the transfer syntax is not supported or is uncompressed
+// (Explicit/Implicit VR Little Endian).
+//
+// Example:
+//
+//	ds, _ := dicos.ReadFile("scan.dcs")
+//	ts := dicos.GetTransferSyntax(ds)
+//	codec := dicos.CodecByTransferSyntax(ts.UID())
+//	if codec != nil {
+//		// Compressed pixel data, use codec to decompress
+//	}
 func CodecByTransferSyntax(ts string) Codec {
 	return codecsByTS[ts]
 }

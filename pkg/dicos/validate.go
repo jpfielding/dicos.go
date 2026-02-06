@@ -77,6 +77,95 @@ func (r ValidationResult) HasWarnings() bool {
 	return len(r.Warnings) > 0
 }
 
+// CriticalErrors returns only the critical validation errors.
+//
+// Critical errors are Type 1 and Type 1C violations that prevent
+// the dataset from being DICOM-compliant.
+//
+// Example:
+//
+//	result := dicos.ValidateCT(ds)
+//	critical := result.CriticalErrors()
+//	if len(critical) > 0 {
+//		log.Fatal("Cannot write non-compliant DICOM file")
+//	}
+func (r ValidationResult) CriticalErrors() []ValidationError {
+	var critical []ValidationError
+	for _, err := range r.Errors {
+		if err.IsCritical {
+			critical = append(critical, err)
+		}
+	}
+	return critical
+}
+
+// AllMessages returns all error and warning messages as strings.
+//
+// This is useful for logging or displaying validation results.
+//
+// Example:
+//
+//	result := dicos.ValidateCT(ds)
+//	for _, msg := range result.AllMessages() {
+//		log.Println(msg)
+//	}
+func (r ValidationResult) AllMessages() []string {
+	messages := make([]string, 0, len(r.Errors)+len(r.Warnings))
+	for _, err := range r.Errors {
+		messages = append(messages, "ERROR: "+err.Error())
+	}
+	for _, warn := range r.Warnings {
+		messages = append(messages, "WARNING: "+warn.Error())
+	}
+	return messages
+}
+
+// Summary returns a formatted summary string of validation results.
+//
+// Example:
+//
+//	result := dicos.ValidateCT(ds)
+//	fmt.Println(result.Summary())
+//	// Output: "Valid: true, Errors: 0, Warnings: 0"
+func (r ValidationResult) Summary() string {
+	return fmt.Sprintf("Valid: %v, Errors: %d, Warnings: %d",
+		r.IsValid(), len(r.Errors), len(r.Warnings))
+}
+
+// String returns a detailed string representation of all validation results.
+//
+// Example:
+//
+//	result := dicos.ValidateCT(ds)
+//	fmt.Println(result.String())
+func (r ValidationResult) String() string {
+	if len(r.Errors) == 0 && len(r.Warnings) == 0 {
+		return "Validation passed with no errors or warnings"
+	}
+
+	s := fmt.Sprintf("Validation Result: %s\n", r.Summary())
+
+	if len(r.Errors) > 0 {
+		s += "\nErrors:\n"
+		for _, err := range r.Errors {
+			critical := ""
+			if err.IsCritical {
+				critical = " [CRITICAL]"
+			}
+			s += fmt.Sprintf("  - %s%s\n", err.Error(), critical)
+		}
+	}
+
+	if len(r.Warnings) > 0 {
+		s += "\nWarnings:\n"
+		for _, warn := range r.Warnings {
+			s += fmt.Sprintf("  - %s\n", warn.Error())
+		}
+	}
+
+	return s
+}
+
 // IODRequirement defines a required attribute for an IOD
 type IODRequirement struct {
 	Tag       tag.Tag

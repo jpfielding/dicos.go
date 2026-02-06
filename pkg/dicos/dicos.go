@@ -63,7 +63,24 @@ const (
 	DICOSAIT3DImageStorageUID = "1.2.840.10008.5.1.4.1.1.501.5"
 )
 
-// ReadFile reads a DICOM/DICOS file from disk
+// ReadFile reads a DICOM/DICOS file from disk and returns a parsed Dataset.
+//
+// The file must follow DICOM Part 10 format with:
+//   - 128-byte preamble
+//   - "DICM" magic bytes
+//   - File Meta Information (Group 0002) in Explicit VR Little Endian
+//   - Dataset encoded per Transfer Syntax UID
+//
+// Returns an error if the file cannot be opened, read, or parsed.
+//
+// Example:
+//
+//	ds, err := dicos.ReadFile("/path/to/scan.dcs")
+//	if err != nil {
+//		log.Fatalf("Failed to read DICOS file: %v", err)
+//	}
+//	modality := dicos.GetModality(ds)
+//	fmt.Printf("Modality: %s\n", modality)
 func ReadFile(path string) (*Dataset, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -79,124 +96,211 @@ func ReadFile(path string) (*Dataset, error) {
 	return Parse(bytes.NewReader(data))
 }
 
-// ReadBuffer reads a DICOM/DICOS file from a byte slice
+// ReadBuffer reads a DICOM/DICOS file from a byte slice and returns a parsed Dataset.
+//
+// This is equivalent to ReadFile but operates on in-memory data. Useful for
+// processing DICOS data from network streams, archives, or embedded resources.
+//
+// The data must follow DICOM Part 10 format (preamble, DICM, File Meta, dataset).
+//
+// Example:
+//
+//	data, _ := os.ReadFile("scan.dcs")
+//	ds, err := dicos.ReadBuffer(data)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
 func ReadBuffer(data []byte) (*Dataset, error) {
 	return Parse(bytes.NewReader(data))
 }
 
-// GetExtension returns the standard DICOS file extension
+// GetExtension returns the standard DICOS file extension ".dcs".
+//
+// DICOS files conventionally use the .dcs extension, though .dcm is also common
+// for generic DICOM files.
 func GetExtension() string {
 	return ".dcs"
 }
 
-// IsCT returns true if the dataset is a CT image
+// IsCT returns true if the dataset represents a CT (Computed Tomography) image.
+//
+// Checks the SOP Class UID (0008,0016) for either:
+//   - Standard DICOM CT: "1.2.840.10008.5.1.4.1.1.2"
+//   - DICOS CT: "1.2.840.10008.5.1.4.1.1.501.1"
+//
+// CT images contain cross-sectional X-ray data with Hounsfield Units representing
+// tissue density.
 func IsCT(ds *Dataset) bool {
 	return checkSOPClass(ds, CTImageStorageUID, DICOSCTImageStorageUID)
 }
 
-// IsDX returns true if the dataset is a DX image
+// IsDX returns true if the dataset represents a DX (Digital X-ray) image.
+//
+// Checks the SOP Class UID (0008,0016) for either:
+//   - Standard DICOM DX: "1.2.840.10008.5.1.4.1.1.1.1"
+//   - DICOS DX: "1.2.840.10008.5.1.4.1.1.501.2"
+//
+// DX images are 2D projection X-ray images captured by digital detectors, commonly
+// used in baggage screening for transmission imaging.
 func IsDX(ds *Dataset) bool {
 	return checkSOPClass(ds, DXImageStorageUID, DICOSDXImageStorageUID)
 }
 
-// IsTDR returns true if the dataset is a Threat Detection Report
+// IsTDR returns true if the dataset represents a TDR (Threat Detection Report).
+//
+// Checks the SOP Class UID (0008,0016) for either:
+//   - Comprehensive SR: "1.2.840.10008.5.1.4.1.1.88.67"
+//   - DICOS TDR: "1.2.840.10008.5.1.4.1.1.501.3"
+//
+// TDR objects contain structured reporting data about detected potential threats
+// in baggage/cargo scans, including PTO (Potential Threat Object) sequences with
+// spatial coordinates, confidence scores, and threat classifications.
 func IsTDR(ds *Dataset) bool {
 	return checkSOPClass(ds, TDRStorageUID, DICOSTDRStorageUID)
 }
 
-// IsAIT2D returns true if the dataset is an AIT 2D image
+// IsAIT2D returns true if the dataset represents an AIT (Automated Inspection Terminal) 2D image.
+//
+// Checks the SOP Class UID (0008,0016) for:
+//   - DICOS AIT 2D: "1.2.840.10008.5.1.4.1.1.501.4"
+//
+// AIT 2D images are typically millimeter-wave or backscatter X-ray images used for
+// personnel screening, producing 2D projection views.
 func IsAIT2D(ds *Dataset) bool {
 	return checkSOPClass(ds, DICOSAIT2DImageStorageUID)
 }
 
-// IsAIT3D returns true if the dataset is an AIT 3D image
+// IsAIT3D returns true if the dataset represents an AIT 3D image.
+//
+// Checks the SOP Class UID (0008,0016) for:
+//   - DICOS AIT 3D: "1.2.840.10008.5.1.4.1.1.501.5"
+//
+// AIT 3D images provide volumetric data from automated personnel screening systems,
+// typically from millimeter-wave technology producing 3D surface reconstructions.
 func IsAIT3D(ds *Dataset) bool {
 	return checkSOPClass(ds, DICOSAIT3DImageStorageUID)
 }
 
-// GetModality returns the modality string from the dataset
+// GetModality returns the Modality (0008,0060) value from the dataset.
+//
+// Common DICOS modality values:
+//   - "CT" - Computed Tomography
+//   - "DX" - Digital Radiography
+//   - "SR" - Structured Report (for TDR)
+//   - "OT" - Other (sometimes used for AIT)
+//
+// Returns an empty string if the Modality element is not present.
+//
+// Deprecated: Use ds.Modality() method instead for better discoverability.
 func GetModality(ds *Dataset) string {
-	if elem, ok := ds.FindElement(tag.Modality.Group, tag.Modality.Element); ok {
-		if s, ok := elem.GetString(); ok {
-			return strings.TrimSpace(s)
-		}
-	}
-	return ""
+	return ds.Modality()
 }
 
-// GetTransferSyntax returns the transfer syntax from the dataset
+// GetTransferSyntax returns the Transfer Syntax UID (0002,0010) from the dataset.
+//
+// Transfer syntax specifies the encoding rules for the dataset, including:
+//   - Value Representation (explicit vs implicit)
+//   - Byte ordering (little endian vs big endian)
+//   - Compression (uncompressed vs JPEG-LS, JPEG 2000, RLE, etc.)
+//
+// Common transfer syntaxes:
+//   - "1.2.840.10008.1.2.1" - Explicit VR Little Endian (uncompressed)
+//   - "1.2.840.10008.1.2" - Implicit VR Little Endian (uncompressed)
+//   - "1.2.840.10008.1.2.4.80" - JPEG-LS Lossless (compressed)
+//
+// Returns Explicit VR Little Endian as default if not specified.
+//
+// Note: File Meta Information (Group 0002) is always Explicit VR Little Endian
+// regardless of the transfer syntax specified for the rest of the dataset.
+//
+// Deprecated: Use ds.TransferSyntax() method instead for better discoverability.
 func GetTransferSyntax(ds *Dataset) TransferSyntax {
-	if elem, ok := ds.FindElement(tag.TransferSyntaxUID.Group, tag.TransferSyntaxUID.Element); ok {
-		if s, ok := elem.GetString(); ok {
-			return transfer.FromUID(strings.TrimSpace(s))
-		}
-	}
-	return ExplicitVRLittleEndian // Default
+	return ds.TransferSyntax()
 }
 
-// IsEncapsulated returns true if the pixel data is encapsulated (compressed)
+// IsEncapsulated returns true if the dataset's pixel data is encapsulated (compressed).
+//
+// Determines if compression is used by checking the Transfer Syntax UID.
+// Encapsulated transfer syntaxes include:
+//   - JPEG-LS Lossless/Near-Lossless
+//   - JPEG 2000 Lossless/Lossy
+//   - RLE (Run-Length Encoding)
+//   - JPEG Lossless (Process 14)
+//
+// Returns false for native (uncompressed) transfer syntaxes:
+//   - Explicit VR Little Endian
+//   - Implicit VR Little Endian
+//
+// Encapsulated pixel data must be decompressed using DecompressPixelData() before
+// accessing raw pixel values.
+//
+// Deprecated: Use ds.IsEncapsulated() method instead for better discoverability.
 func IsEncapsulated(ds *Dataset) bool {
-	syntax := GetTransferSyntax(ds)
-	return syntax.IsEncapsulated()
+	return ds.IsEncapsulated()
 }
 
-// GetRows returns the number of rows in the image
+// GetRows returns the number of rows (image height) from Rows (0028,0010).
+//
+// Returns 0 if the element is not present.
+//
+// Deprecated: Use ds.Rows() method instead for better discoverability.
 func GetRows(ds *Dataset) int {
-	if elem, ok := ds.FindElement(tag.Rows.Group, tag.Rows.Element); ok {
-		if v, ok := elem.GetInt(); ok {
-			return v
-		}
-	}
-	return 0
+	return ds.Rows()
 }
 
-// GetColumns returns the number of columns in the image
+// GetColumns returns the number of columns (image width) from Columns (0028,0011).
+//
+// Returns 0 if the element is not present.
+//
+// Deprecated: Use ds.Columns() method instead for better discoverability.
 func GetColumns(ds *Dataset) int {
-	if elem, ok := ds.FindElement(tag.Columns.Group, tag.Columns.Element); ok {
-		if v, ok := elem.GetInt(); ok {
-			return v
-		}
-	}
-	return 0
+	return ds.Columns()
 }
 
-// GetNumberOfFrames returns the number of frames in the image
+// GetNumberOfFrames returns the number of frames from NumberOfFrames (0028,0008).
+//
+// For multi-frame images (e.g., CT series), this indicates how many frames are
+// concatenated in the pixel data. Returns 1 if not specified (single-frame image).
+//
+// Deprecated: Use ds.NumberOfFrames() method instead for better discoverability.
 func GetNumberOfFrames(ds *Dataset) int {
-	if elem, ok := ds.FindElement(tag.NumberOfFrames.Group, tag.NumberOfFrames.Element); ok {
-		if v, ok := elem.GetInt(); ok {
-			return v
-		}
-		// Number of Frames can be a string (IS VR)
-		if s, ok := elem.GetString(); ok {
-			var n int
-			fmt.Sscanf(strings.TrimSpace(s), "%d", &n)
-			return n
-		}
-	}
-	return 1 // Default to 1 if not specified
+	return ds.NumberOfFrames()
 }
 
-// GetBitsAllocated returns the bits allocated per sample
+// GetBitsAllocated returns the bits allocated per sample from BitsAllocated (0028,0100).
+//
+// Common values:
+//   - 8 - For 8-bit grayscale images
+//   - 16 - For 16-bit CT/DX images
+//
+// Returns 16 as default if not specified.
+//
+// Deprecated: Use ds.BitsAllocated() method instead for better discoverability.
 func GetBitsAllocated(ds *Dataset) int {
-	if elem, ok := ds.FindElement(tag.BitsAllocated.Group, tag.BitsAllocated.Element); ok {
-		if v, ok := elem.GetInt(); ok {
-			return v
-		}
-	}
-	return 16 // Default
+	return ds.BitsAllocated()
 }
 
-// GetPixelRepresentation returns 0 for unsigned, 1 for signed
+// GetPixelRepresentation returns the pixel representation from PixelRepresentation (0028,0103).
+//
+// Values:
+//   - 0 - Unsigned integer
+//   - 1 - Signed integer (two's complement)
+//
+// Returns 0 (unsigned) as default if not specified.
+//
+// Note: Some non-compliant CT files use unsigned representation with values offset
+// by +32768. Use GetRescale() to handle this correctly.
+//
+// Deprecated: Use ds.PixelRepresentation() method instead for better discoverability.
 func GetPixelRepresentation(ds *Dataset) int {
-	if elem, ok := ds.FindElement(tag.PixelRepresentation.Group, tag.PixelRepresentation.Element); ok {
-		if v, ok := elem.GetInt(); ok {
-			return v
-		}
-	}
-	return 0 // Default to unsigned
+	return ds.PixelRepresentation()
 }
 
-// GetInstanceNumber returns the instance number (0020,0013)
+// GetInstanceNumber returns the Instance Number (0020,0013) identifying the image
+// within a series.
+//
+// For multi-slice CT acquisitions, this typically represents the slice number.
+// Returns 0 if not present.
 func GetInstanceNumber(ds *Dataset) int {
 	if elem, ok := ds.FindElement(tag.InstanceNumber.Group, tag.InstanceNumber.Element); ok {
 		if v, ok := elem.GetInt(); ok {
@@ -211,7 +315,13 @@ func GetInstanceNumber(ds *Dataset) int {
 	return 0
 }
 
-// GetKVP returns the peak kilovoltage (0018,0060) for X-ray energy level
+// GetKVP returns the peak kilovoltage (KVP) from KVP (0018,0060).
+//
+// This indicates the X-ray tube voltage in kilovolts. Common values:
+//   - 80-90 kV - Low energy in dual-energy CT
+//   - 120-140 kV - Standard CT or high energy in dual-energy CT
+//
+// Returns 0 if not present.
 func GetKVP(ds *Dataset) float64 {
 	if elem, ok := ds.FindElement(tag.KVP.Group, tag.KVP.Element); ok {
 		if s, ok := elem.GetString(); ok {
@@ -223,7 +333,10 @@ func GetKVP(ds *Dataset) float64 {
 	return 0
 }
 
-// GetImageComments returns the image comments (0020,4000)
+// GetImageComments returns user-defined comments from ImageComments (0020,4000).
+//
+// Some DICOS vendors encode energy level hints here (e.g., "high_energy", "low_energy").
+// Returns empty string if not present.
 func GetImageComments(ds *Dataset) string {
 	if elem, ok := ds.FindElement(tag.ImageComments.Group, tag.ImageComments.Element); ok {
 		if s, ok := elem.GetString(); ok {
@@ -233,7 +346,11 @@ func GetImageComments(ds *Dataset) string {
 	return ""
 }
 
-// GetSeriesDescription returns the series description (0008,103E)
+// GetSeriesDescription returns the user-provided series description from
+// SeriesDescription (0008,103E).
+//
+// Example values: "Axial CT", "Luggage_Scan_HE", "Density1".
+// Returns empty string if not present.
 func GetSeriesDescription(ds *Dataset) string {
 	if elem, ok := ds.FindElement(tag.SeriesDescription.Group, tag.SeriesDescription.Element); ok {
 		if s, ok := elem.GetString(); ok {
@@ -243,8 +360,14 @@ func GetSeriesDescription(ds *Dataset) string {
 	return ""
 }
 
-// GetSeriesEnergy returns the DICOS series energy value (6100,0030)
-// 1 = Low Energy, 2 = High Energy, 0 = not set
+// GetSeriesEnergy returns the DICOS-specific energy level from SeriesEnergy (6100,0030).
+//
+// Values:
+//   - 1 - Low Energy
+//   - 2 - High Energy
+//   - 0 - Not set or not applicable
+//
+// This is the most authoritative source for energy level in DICOS files.
 func GetSeriesEnergy(ds *Dataset) int {
 	if elem, ok := ds.FindElement(tag.SeriesEnergy.Group, tag.SeriesEnergy.Element); ok {
 		if v, ok := elem.GetInt(); ok {
@@ -254,7 +377,11 @@ func GetSeriesEnergy(ds *Dataset) int {
 	return 0
 }
 
-// GetSeriesEnergyDescription returns the DICOS energy description (6100,0031)
+// GetSeriesEnergyDescription returns the DICOS energy description from
+// SeriesEnergyDescription (6100,0031).
+//
+// Example values: "High Energy", "Low Energy", "HE", "LE".
+// Returns empty string if not present.
 func GetSeriesEnergyDescription(ds *Dataset) string {
 	if elem, ok := ds.FindElement(tag.SeriesEnergyDescription.Group, tag.SeriesEnergyDescription.Element); ok {
 		if s, ok := elem.GetString(); ok {
@@ -264,8 +391,36 @@ func GetSeriesEnergyDescription(ds *Dataset) string {
 	return ""
 }
 
-// GetEnergyLevel returns the energy level ("he", "le", "") based on DICOM/DICOS tags.
-// Priority: SeriesEnergy (6100,0030) > SeriesEnergyDescription > ImageComments > KVP > SeriesDescription
+// GetEnergyLevel determines the X-ray energy level for dual-energy DICOS scans.
+//
+// Returns:
+//   - "he" for high energy
+//   - "le" for low energy
+//   - "" if energy level cannot be determined
+//
+// Detection uses a priority cascade strategy, checking multiple tags in order:
+//
+//  1. SeriesEnergy (6100,0030) - DICOS-specific energy tag (1=LE, 2=HE)
+//  2. SeriesEnergyDescription (6100,0031) - Text containing "high"/"low"
+//  3. ImageComments (0020,4000) - Text containing "high_energy"/"low_energy"
+//  4. KVP (0018,0060) - Peak kilovoltage (>=110kV is HE, <110kV is LE)
+//  5. SeriesDescription (0008,103E) - Text hints like "_he", "density2", etc.
+//
+// This heuristic approach handles various vendor implementations where energy level
+// encoding differs. The KVP threshold (110kV) is based on typical dual-energy CT
+// protocols (80kV low, 140kV high).
+//
+// Example:
+//
+//	energy := dicos.GetEnergyLevel(ds)
+//	switch energy {
+//	case "he":
+//		fmt.Println("High energy scan")
+//	case "le":
+//		fmt.Println("Low energy scan")
+//	default:
+//		fmt.Println("Single energy or unknown")
+//	}
 func GetEnergyLevel(ds *Dataset) string {
 	// 1. Check DICOS SeriesEnergy tag first
 	seriesEnergy := GetSeriesEnergy(ds)
@@ -315,7 +470,37 @@ func GetEnergyLevel(ds *Dataset) string {
 	return ""
 }
 
-// GetPixelData extracts and returns pixel data from the dataset
+// GetPixelData extracts pixel data from the PixelData (7FE0,0010) element.
+//
+// Returns *PixelData in either native (uncompressed) or encapsulated (compressed) format:
+//
+// Native Format (IsEncapsulated=false):
+//   - Frame.Data contains []uint16 pixel values in row-major order
+//   - Pixels ordered left-to-right, top-to-bottom within each frame
+//   - Multi-frame images have frames stored sequentially
+//
+// Encapsulated Format (IsEncapsulated=true):
+//   - Frame.CompressedData contains compressed bitstream bytes
+//   - Each frame compressed independently per DICOM encapsulation rules
+//   - Must decompress using DecompressPixelData() with appropriate codec
+//
+// The method automatically handles:
+//   - Byte to uint16 conversion for native data
+//   - Multi-frame image splitting based on Rows, Columns, NumberOfFrames
+//   - Both OW (Other Word) and OB (Other Byte) Value Representations
+//
+// Example:
+//
+//	pd, err := ds.GetPixelData()
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	if pd.IsEncapsulated {
+//		// Compressed - need to decompress
+//		pd, err = dicos.DecompressPixelData(ds, pd)
+//	}
+//	// Access pixel values
+//	frame0 := pd.Frames[0].Data // First frame pixels
 func (ds *Dataset) GetPixelData() (*PixelData, error) {
 	elem, ok := ds.FindElement(tag.PixelData.Group, tag.PixelData.Element)
 	if !ok {
@@ -412,8 +597,42 @@ func (ds *Dataset) GetPixelData() (*PixelData, error) {
 	return pd, nil
 }
 
-// GetRescale returns the rescale intercept and slope from the dataset.
-// If Rescale Intercept is missing, defaults to 0.
+// GetRescale returns the Rescale Intercept and Slope for converting raw pixel values
+// to modality-specific units (e.g., Hounsfield Units for CT).
+//
+// This function applies heuristics for unsigned CT images. For explicit control without
+// heuristics, use GetRescaleExplicit().
+//
+// The conversion formula is:
+//
+//	OutputValue = (RawPixelValue * RescaleSlope) + RescaleIntercept
+//
+// For CT images, this produces Hounsfield Units (HU):
+//   - Air: -1000 HU
+//   - Water: 0 HU
+//   - Bone: +1000 to +3000 HU
+//
+// Special Handling for Unsigned CT Images (Heuristic):
+//
+// Some non-compliant CT files mark PixelRepresentation as 0 (unsigned) but contain
+// values offset by +32768 to represent signed data. This function applies a heuristic
+// for CT datasets: if PixelRepresentation=0 and RescaleIntercept is missing, it returns
+// intercept=-32768 to correct this offset.
+//
+// To disable this heuristic, use GetRescaleExplicit(ds) instead.
+//
+// Default Values:
+//   - If RescaleIntercept (0028,1052) is absent: 0.0 (or -32768.0 for unsigned CT via heuristic)
+//   - If RescaleSlope (0028,1053) is absent: 1.0
+//
+// Example:
+//
+//	intercept, slope := dicos.GetRescale(ds)
+//	pd, _ := ds.GetPixelData()
+//	for _, pixel := range pd.Frames[0].Data {
+//		hu := float64(pixel)*slope + intercept
+//		fmt.Printf("Pixel: %d -> HU: %.1f\n", pixel, hu)
+//	}
 func GetRescale(ds *Dataset) (intercept, slope float64) {
 	intercept, slope = 0, 1 // Default values
 
@@ -443,6 +662,95 @@ func GetRescale(ds *Dataset) (intercept, slope float64) {
 	}
 
 	return
+}
+
+// GetRescaleExplicit returns the Rescale Intercept and Slope without applying heuristics.
+//
+// Unlike GetRescale(), this function returns exactly what's in the DICOM tags
+// without any automatic correction for unsigned CT images.
+//
+// Use this when you want explicit control or are working with non-CT modalities
+// where the unsigned CT heuristic shouldn't apply.
+//
+// Default Values:
+//   - If RescaleIntercept (0028,1052) is absent: 0.0
+//   - If RescaleSlope (0028,1053) is absent: 1.0
+//
+// Example:
+//
+//	intercept, slope := dicos.GetRescaleExplicit(ds)
+//	// No automatic -32768 offset applied for unsigned CT
+func GetRescaleExplicit(ds *Dataset) (intercept, slope float64) {
+	intercept, slope = 0, 1 // Default values
+
+	if elem, ok := ds.FindElement(tag.RescaleIntercept.Group, tag.RescaleIntercept.Element); ok {
+		if s, ok := elem.GetString(); ok {
+			fmt.Sscanf(s, "%f", &intercept)
+		}
+	}
+
+	if elem, ok := ds.FindElement(tag.RescaleSlope.Group, tag.RescaleSlope.Element); ok {
+		if s, ok := elem.GetString(); ok {
+			fmt.Sscanf(s, "%f", &slope)
+		}
+	}
+
+	return
+}
+
+// SetEnergyLevel explicitly sets the DICOS energy level tags in the dataset.
+//
+// This provides direct control over energy level encoding, bypassing the heuristic
+// detection used by GetEnergyLevel().
+//
+// Parameters:
+//   - ds: The dataset to modify
+//   - level: Energy level ("he" for high energy, "le" for low energy, "" to clear)
+//
+// Sets the following tags:
+//   - SeriesEnergy (6100,0030): 2 for HE, 1 for LE
+//   - SeriesEnergyDescription (6100,0031): "High Energy" or "Low Energy"
+//
+// Example:
+//
+//	ds, _ := dicos.ReadFile("scan.dcs")
+//	dicos.SetEnergyLevel(ds, "he") // Mark as high energy
+//	dicos.Write(file, ds)
+func SetEnergyLevel(ds *Dataset, level string) error {
+	level = strings.ToLower(strings.TrimSpace(level))
+
+	switch level {
+	case "he", "high":
+		ds.Elements[Tag{Group: 0x6100, Element: 0x0030}] = &Element{
+			Tag:   Tag{Group: 0x6100, Element: 0x0030},
+			VR:    "US",
+			Value: uint16(2),
+		}
+		ds.Elements[Tag{Group: 0x6100, Element: 0x0031}] = &Element{
+			Tag:   Tag{Group: 0x6100, Element: 0x0031},
+			VR:    "LO",
+			Value: "High Energy",
+		}
+	case "le", "low":
+		ds.Elements[Tag{Group: 0x6100, Element: 0x0030}] = &Element{
+			Tag:   Tag{Group: 0x6100, Element: 0x0030},
+			VR:    "US",
+			Value: uint16(1),
+		}
+		ds.Elements[Tag{Group: 0x6100, Element: 0x0031}] = &Element{
+			Tag:   Tag{Group: 0x6100, Element: 0x0031},
+			VR:    "LO",
+			Value: "Low Energy",
+		}
+	case "":
+		// Clear energy tags
+		delete(ds.Elements, Tag{Group: 0x6100, Element: 0x0030})
+		delete(ds.Elements, Tag{Group: 0x6100, Element: 0x0031})
+	default:
+		return fmt.Errorf("invalid energy level: %q (must be 'he', 'le', or empty)", level)
+	}
+
+	return nil
 }
 
 // Helper function to check SOP Class UID

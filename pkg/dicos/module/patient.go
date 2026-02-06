@@ -15,6 +15,12 @@ type PatientModule struct {
 	Magistrate       string // DICOS specific
 }
 
+// ToTags converts the Patient Module to DICOM elements.
+//
+// Returns a slice of IODElement containing patient identification and demographic
+// information including PatientName (0010,0010), PatientID (0010,0020),
+// PatientBirthDate (0010,0030), PatientSex (0010,0040), PatientAge (0010,1010),
+// and PatientComments (0010,4000).
 func (m *PatientModule) ToTags() []IODElement {
 	return []IODElement{
 		{Tag: tag.PatientName, Value: m.PatientName.String()},

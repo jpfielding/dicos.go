@@ -67,11 +67,53 @@ func (p PersonName) String() string {
 	return fmt.Sprintf("%s^%s^%s^%s^%s", p.FamilyName, p.GivenName, p.MiddleName, p.Prefix, p.Suffix)
 }
 
-// Common module interfaces
+// IODModule defines the interface for DICOM Information Object Definition (IOD) modules.
+//
+// An IOD module is a collection of related DICOM attributes that describe a specific
+// aspect of medical imaging data. Modules are the building blocks of DICOM IODs,
+// providing a standardized way to organize metadata.
+//
+// Common DICOS modules include:
+//   - Patient Module: Patient identification and demographic information
+//   - Study Module: Study-level metadata (accession number, study date/time)
+//   - Series Module: Series-level organization (modality, series number)
+//   - Equipment Module: Scanner/detector information
+//   - CT Image Module: CT-specific imaging parameters
+//   - DX Detector Module: Digital X-ray detector characteristics
+//   - VOI LUT Module: Windowing parameters for display
+//   - SOP Common Module: Instance identification (SOP Class/Instance UIDs)
+//
+// Modules are composed into complete IODs. For example, a DICOS CT Image IOD contains:
+//   Patient + Study + Series + Equipment + FrameOfReference + CTImage + VOILUT + SOPCommon
+//
+// Implementations must provide ToTags() which returns a slice of tag/value pairs
+// to be added to a Dataset.
+//
+// Example:
+//
+//	patient := module.NewPatientModule("DOE^JOHN", "PAT-12345", "19700101", "M")
+//	tags := patient.ToTags() // Convert module to DICOM elements
+//	ds, _ := dicos.NewDataset(dicos.WithModule(tags))
 type IODModule interface {
 	ToTags() []IODElement
 }
 
+// IODElement represents a single DICOM element as a tag/value pair.
+//
+// This is used by IODModule implementations to return their constituent elements.
+// The Tag identifies the DICOM attribute (e.g., tag.PatientName), and Value contains
+// the element's data in the appropriate Go type.
+//
+// Example:
+//
+//	func (p *PatientModule) ToTags() []IODElement {
+//		return []IODElement{
+//			{Tag: tag.PatientName, Value: p.PatientName},
+//			{Tag: tag.PatientID, Value: p.PatientID},
+//			{Tag: tag.PatientBirthDate, Value: p.PatientBirthDate},
+//			{Tag: tag.PatientSex, Value: p.PatientSex},
+//		}
+//	}
 type IODElement struct {
 	Tag   tag.Tag
 	Value interface{}

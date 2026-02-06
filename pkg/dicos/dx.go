@@ -46,7 +46,7 @@ type DXImage struct {
 	PresentationIntentType string // PRESENTATION or PROCESSING
 
 	// Pixel Data
-	PixelData []uint16
+	PixelData *PixelData
 	Codec     Codec // nil = uncompressed
 
 	// Additional Tags (Generic support for tags not explicitly defined)
@@ -77,11 +77,48 @@ func NewDXImage() *DXImage {
 	}
 }
 
-// SetPixelData sets the raw pixel data
+// SetPixelData sets native pixel data for the DX image.
+//
+// This method handles both single-frame and multi-frame images automatically.
+// If len(data) > rows*cols, it splits the data into multiple frames.
+//
+// Parameters:
+//   - rows: Image height in pixels
+//   - cols: Image width in pixels
+//   - data: Pixel values in row-major order (left-to-right, top-to-bottom)
+//
+// To compress the pixel data, set dx.Codec before calling GetDataset():
+//
+//	dx.SetPixelData(512, 512, pixelData)
+//	dx.Codec = dicos.CodecJPEGLS
+//	dx.Write("output.dcs")
 func (dx *DXImage) SetPixelData(rows, cols int, data []uint16) {
 	dx.Rows = rows
 	dx.Columns = cols
-	dx.PixelData = data
+
+	pixelsPerFrame := rows * cols
+	numFrames := len(data) / pixelsPerFrame
+	if numFrames < 1 {
+		numFrames = 1
+	}
+
+	pd := &PixelData{
+		IsEncapsulated: false,
+		Frames:         make([]Frame, numFrames),
+	}
+
+	for i := 0; i < numFrames; i++ {
+		start := i * pixelsPerFrame
+		end := start + pixelsPerFrame
+		if end > len(data) {
+			end = len(data)
+		}
+
+		frameData := make([]uint16, end-start)
+		copy(frameData, data[start:end])
+		pd.Frames[i] = Frame{Data: frameData}
+	}
+	dx.PixelData = pd
 }
 
 // GetDataset builds and returns the DICOS Dataset
@@ -147,7 +184,12 @@ func (dx *DXImage) GetDataset() (*Dataset, error) {
 	}
 
 	// 4. Pixel Data
-	opts = append(opts, WithPixelData(dx.Rows, dx.Columns, dx.BitsAllocated, dx.PixelData, dx.Codec))
+	if dx.Codec != nil && dx.PixelData != nil && !dx.PixelData.IsEncapsulated {
+		flatData := dx.PixelData.GetFlatData()
+		opts = append(opts, WithPixelData(dx.Rows, dx.Columns, dx.BitsAllocated, flatData, dx.Codec))
+	} else if dx.PixelData != nil {
+		opts = append(opts, WithRawPixelData(dx.PixelData))
+	}
 
 	return NewDataset(opts...)
 }

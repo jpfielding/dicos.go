@@ -12,8 +12,39 @@ import (
 	"github.com/jpfielding/dicos.go/pkg/dicos/transfer"
 )
 
-// CTImage represents a DICOM CT Image IOD
-// modeled after SDICOS::CT::CTImage
+// CTImage represents a DICOM CT (Computed Tomography) Image IOD (Information Object Definition).
+//
+// This high-level structure composes multiple DICOM modules to create a complete CT dataset:
+//   - Patient Module: Patient demographics
+//   - Study Module: Study-level information
+//   - Series Module: Series-level organization
+//   - Equipment Module: Scanner information
+//   - FrameOfReference Module: Spatial coordinate system
+//   - ImagePlane Module: Image position and orientation
+//   - CTImageMod: CT-specific imaging parameters (KVP, slice thickness, etc.)
+//   - VOILUT Module: Window/level display presets
+//   - SOPCommon Module: Instance identification
+//
+// Guaranteed Non-nil Modules After NewCTImage():
+//   - Patient, Study, Series, Equipment, SOPCommon
+//   - FrameOfReference, ImagePlane, CTImageMod, VOILUT
+//
+// These modules are automatically initialized with defaults and can be customized before
+// calling GetDataset() to generate the final DICOS file.
+//
+// Example:
+//
+//	ct := dicos.NewCTImage()
+//	ct.Patient.PatientID = "PAT-12345"
+//	ct.Patient.SetPatientName("John", "Doe", "", "", "")
+//	ct.Rows = 512
+//	ct.Columns = 512
+//	ct.SetPixelData(512, 512, pixelData)
+//	ct.Codec = dicos.CodecJPEGLS
+//	ct.Write("/path/to/output.dcs")
+//
+// Note: The legacy Image field (CTImageModule with KV map) is deprecated. Use CTImageMod
+// (module.CTImageModule) for new code, which provides type-safe field access.
 type CTImage struct {
 	Patient   *module.PatientModule
 	Study     *module.GeneralStudyModule
@@ -30,7 +61,23 @@ type CTImage struct {
 	ContentDate module.Date
 	ContentTime module.Time
 
-	// Legacy: custom CT items (deprecated, use CTImageMod)
+	// Deprecated: Legacy custom CT items. Use CTImageMod instead for type-safe field access.
+	//
+	// Migration Guide:
+	//
+	// Old approach (deprecated):
+	//   ct.Image.KV[tag.KVP] = 120.0
+	//   ct.Image.KV[tag.DataCollectionDiameter] = 500.0
+	//   ct.Image.KV[tag.ConvolutionKernel] = "STANDARD"
+	//
+	// New approach (recommended):
+	//   ct.CTImageMod.KVP = 120.0
+	//   ct.CTImageMod.DataCollectionDiameter = 500.0
+	//   ct.CTImageMod.ConvolutionKernel = "STANDARD"
+	//
+	// The CTImageMod field provides type-safe, documented fields for all CT-specific
+	// attributes and follows NEMA DICOS standards. The Image field with its KV map
+	// remains for backward compatibility but is not recommended for new code.
 	Image     *CTImageModule
 	PixelData *PixelData
 
@@ -49,12 +96,62 @@ type CTImage struct {
 	Codec            Codec // nil = uncompressed
 }
 
-// CTImageModule is a legacy simple container for CT Image module attributes
-// Prefer using module.CTImageModule for new code
+// CTImageModule is a legacy simple container for CT Image module attributes.
+//
+// Deprecated: Use module.CTImageModule (accessed via CTImage.CTImageMod) instead,
+// which provides type-safe fields for CT-specific attributes.
+//
+// Migration Example:
+//
+//	// Old (deprecated):
+//	ct.Image.KV[tag.KVP] = 120.0
+//	ct.Image.KV[tag.DataCollectionDiameter] = 500.0
+//	ct.Image.KV[tag.ConvolutionKernel] = "STANDARD"
+//	ct.Image.KV[tag.ExposureTime] = 1000
+//
+//	// New (recommended):
+//	ct.CTImageMod.KVP = 120.0
+//	ct.CTImageMod.DataCollectionDiameter = 500.0
+//	ct.CTImageMod.ConvolutionKernel = "STANDARD"
+//	ct.CTImageMod.ExposureTime = 1000
+//
+// The CTImageMod field provides:
+//   - Type safety: Fields are strongly typed and documented
+//   - Discoverability: IDE autocomplete shows available attributes
+//   - NEMA compliance: Follows DICOS Part 6 CT Image IOD specification
+//   - Validation: Easier to validate required vs optional attributes
+//
+// This legacy KV map pattern remains for backward compatibility only. All new code
+// should use CTImage.CTImageMod for CT-specific imaging parameters.
 type CTImageModule struct {
 	KV map[tag.Tag]interface{}
 }
 
+// NewCTImage creates a new CT Image IOD with initialized modules and sensible defaults.
+//
+// Guaranteed Initialized Modules:
+//   - Patient, Study, Series, Equipment, SOPCommon (always non-nil)
+//   - FrameOfReference, ImagePlane, CTImageMod, VOILUT (always non-nil)
+//   - Image (legacy KV map, deprecated but initialized for compatibility)
+//
+// Generated Defaults:
+//   - Unique UIDs: StudyInstanceUID, SeriesInstanceUID, SOPInstanceUID
+//   - Current timestamps: StudyDate/Time, SeriesDate/Time, InstanceCreationDate/Time
+//   - SOP Class UID: "1.2.840.10008.5.1.4.1.1.2" (CT Image Storage)
+//   - Image attributes: 16-bit grayscale (BitsAllocated=16, SamplesPerPixel=1, MONOCHROME2)
+//   - Rescale: Intercept=0.0, Slope=1.0, Type="HU" (Hounsfield Units)
+//
+// After construction, customize the fields as needed:
+//
+//	ct := dicos.NewCTImage()
+//	ct.Patient.PatientID = "PAT-001"
+//	ct.Patient.SetPatientName("Jane", "Smith", "", "Dr.", "")
+//	ct.Study.AccessionNumber = "ACC-12345"
+//	ct.CTImageMod.KVP = "120"
+//	ct.CTImageMod.SliceThickness = "2.5"
+//	ct.Rows = 512
+//	ct.Columns = 512
+//	ct.SetPixelData(512, 512, pixelValues)
 func NewCTImage() *CTImage {
 	ct := &CTImage{
 		Patient:          &module.PatientModule{},
@@ -103,7 +200,32 @@ func NewCTImage() *CTImage {
 	return ct
 }
 
-// GetDataset builds and returns the DICOS Dataset
+// GetDataset builds and returns the complete DICOS Dataset from the CTImage.
+//
+// This method:
+//  1. Determines transfer syntax based on ct.Codec or encapsulated pixel data
+//  2. Adds File Meta Information (Group 0002) elements
+//  3. Composes all modules into the dataset
+//  4. Adds convenience field values (Rows, Columns, Rescale, etc.)
+//  5. Adds pixel data (compressed if Codec is set, native otherwise)
+//
+// Transfer Syntax Selection:
+//   - If Codec != nil: Uses codec's transfer syntax UID (e.g., JPEG-LS)
+//   - If PixelData.IsEncapsulated: Defaults to JPEG-LS Lossless
+//   - Otherwise: Explicit VR Little Endian (uncompressed)
+//
+// The returned Dataset can be written to disk using Write() or passed to other
+// DICOS processing functions.
+//
+// Example:
+//
+//	ct := dicos.NewCTImage()
+//	// ... configure ct fields ...
+//	ds, err := ct.GetDataset()
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	dicos.Write(file, ds)
 func (ct *CTImage) GetDataset() (*Dataset, error) {
 	opts := make([]Option, 0, 32)
 
@@ -202,7 +324,29 @@ func (ct *CTImage) Write(path string) (int64, error) {
 	return ct.WriteTo(f)
 }
 
-// SetPixelData sets native pixel data
+// SetPixelData sets native (uncompressed) pixel data for the CT image.
+//
+// Parameters:
+//   - rows: Image height in pixels
+//   - cols: Image width in pixels
+//   - data: Pixel values in row-major order (left-to-right, top-to-bottom)
+//
+// Multi-Frame Handling:
+// If len(data) > rows*cols, the data is automatically split into multiple frames.
+// For example, data with 512*512*3 = 786,432 pixels creates 3 frames.
+//
+// This method:
+//   - Updates ct.PixelData with uncompressed Frame structs
+//   - Sets image attributes (Rows, Columns, BitsAllocated, etc.) in legacy Image.KV
+//   - Configures 16-bit grayscale MONOCHROME2 format
+//
+// To compress the pixel data, set ct.Codec before calling GetDataset():
+//
+//	ct.SetPixelData(512, 512, pixelValues)
+//	ct.Codec = dicos.CodecJPEGLS // Compress using JPEG-LS
+//	ct.Write("output.dcs")
+//
+// For already-compressed data, populate ct.PixelData directly with encapsulated frames.
 func (ct *CTImage) SetPixelData(rows, cols int, data []uint16) {
 	// Update image module tags
 	ct.Image.KV[tag.Rows] = uint16(rows)
