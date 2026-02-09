@@ -16,7 +16,7 @@ Pure Go implementation of JPEG-LS (ITU-T T.87 / ISO/IEC 14495-1) encoder and dec
 ### Encoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
+import "github.com/jpfielding/goxel/pkg/compress/jpegls"
 
 // Lossless encoding (Near = 0)
 err := jpegls.Encode(writer, img, nil)
@@ -31,7 +31,7 @@ err := jpegls.Encode(writer, img, opts)
 ### Decoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
+import "github.com/jpfielding/goxel/pkg/compress/jpegls"
 
 img, err := jpegls.Decode(reader)
 ```

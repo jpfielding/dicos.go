@@ -5,10 +5,10 @@ import (
 	"image"
 	"io"
 
-	"github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
-	"github.com/jpfielding/dicos.go/pkg/compress/jpegli"
-	"github.com/jpfielding/dicos.go/pkg/compress/jpegls"
-	"github.com/jpfielding/dicos.go/pkg/compress/rle"
+	"github.com/jpfielding/jpegs/pkg/compress/jpeg2k"
+	"github.com/jpfielding/jpegs/pkg/compress/jpegli"
+	"github.com/jpfielding/jpegs/pkg/compress/jpegls"
+	"github.com/jpfielding/jpegs/pkg/compress/rle"
 )
 
 // Codec defines the interface for DICOS pixel data compression and decompression.
@@ -150,11 +150,11 @@ var codecsByName = map[string]Codec{
 
 // codecsByTS maps transfer syntax UIDs to implementations
 var codecsByTS = map[string]Codec{
-	"1.2.840.10008.1.2.4.80": &jpegLSCodec{},  // JPEG-LS Lossless
-	"1.2.840.10008.1.2.4.81": &jpegLSCodec{},  // JPEG-LS Near-Lossless
-	"1.2.840.10008.1.2.4.70": &jpegLiCodec{},  // JPEG Lossless First-Order
-	"1.2.840.10008.1.2.5":    &rleCodec{},     // RLE Lossless
-	"1.2.840.10008.1.2.4.90": &jpeg2kCodec{},  // JPEG 2000 Lossless
+	"1.2.840.10008.1.2.4.80": &jpegLSCodec{}, // JPEG-LS Lossless
+	"1.2.840.10008.1.2.4.81": &jpegLSCodec{}, // JPEG-LS Near-Lossless
+	"1.2.840.10008.1.2.4.70": &jpegLiCodec{}, // JPEG Lossless First-Order
+	"1.2.840.10008.1.2.5":    &rleCodec{},    // RLE Lossless
+	"1.2.840.10008.1.2.4.90": &jpeg2kCodec{}, // JPEG 2000 Lossless
 }
 
 // Predefined codec instances for convenience.

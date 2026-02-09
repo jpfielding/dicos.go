@@ -15,13 +15,13 @@ Pure Go implementation of JPEG Lossless (ITU-T T.81 Annex H) encoder and decoder
 ### Encoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpegli"
+import "github.com/jpfielding/goxel/pkg/compress/jpegli"
 
 // Encode with default options (predictor 1)
 err := jpegli.Encode(writer, img, nil)
 
 // Encode with custom predictor
-opts := &jpegli.Encoder{
+opts := &jpegli.Options{
     Predictor:      1,  // 1-7 (see predictor table below)
     PointTransform: 0,  // 0 for lossless
 }
@@ -31,7 +31,7 @@ err := jpegli.Encode(writer, img, opts)
 ### Decoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpegli"
+import "github.com/jpfielding/goxel/pkg/compress/jpegli"
 
 img, err := jpegli.Decode(reader)
 ```

@@ -8,10 +8,10 @@ import (
 	"image/jpeg"
 	"os"
 
-	"github.com/spf13/cobra"
-	jpegli "github.com/jpfielding/dicos.go/pkg/compress/jpegli"
-	jpegls "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
 	dicos "github.com/jpfielding/dicos.go/pkg/dicos"
+	jpegli "github.com/jpfielding/jpegs/pkg/compress/jpegli"
+	jpegls "github.com/jpfielding/jpegs/pkg/compress/jpegls"
+	"github.com/spf13/cobra"
 )
 
 // NewAnalyzeCmd creates the analyze cobra command

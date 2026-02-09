@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/jpfielding/dicos.go/pkg/compress/jpegli"
 	"github.com/jpfielding/dicos.go/pkg/dicos/tag"
+	"github.com/jpfielding/jpegs/pkg/compress/jpegli"
 	"github.com/stretchr/testify/assert"
 )
 

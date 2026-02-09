@@ -1,7 +1,7 @@
 package jpegls
 
 import (
-	"errors"
+	"fmt"
 	"image"
 	"io"
 )
@@ -28,7 +28,7 @@ func Encode(w io.Writer, img image.Image, opts *Options) error {
 	width := b.Max.X - b.Min.X
 	height := b.Max.Y - b.Min.Y
 	if width <= 0 || height <= 0 {
-		return errors.New("invalid image dimensions")
+		return fmt.Errorf("jpegls: invalid image dimensions")
 	}
 
 	// Determine precision and components
@@ -47,7 +47,7 @@ func Encode(w io.Writer, img image.Image, opts *Options) error {
 		precision = 16 // Or less? Assume 16.
 		maxVal = 65535 // (1<<16) - 1
 	default:
-		return errors.New("unsupported image type (only Gray/Gray16)")
+		return fmt.Errorf("jpegls: unsupported image type %T (only Gray/Gray16)", img)
 	}
 
 	// Options

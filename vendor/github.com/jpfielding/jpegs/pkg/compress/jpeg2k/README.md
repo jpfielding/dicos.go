@@ -15,7 +15,7 @@ Pure Go implementation of JPEG 2000 Part-1 (ITU-T T.800 / ISO/IEC 15444-1) encod
 ### Encoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
+import "github.com/jpfielding/goxel/pkg/compress/jpeg2k"
 
 // Encode with default options
 var buf bytes.Buffer
@@ -34,7 +34,7 @@ err := jpeg2k.Encode(&buf, img, opts)
 ### Decoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
+import "github.com/jpfielding/goxel/pkg/compress/jpeg2k"
 
 // Decode image
 img, err := jpeg2k.Decode(reader)
@@ -50,7 +50,7 @@ The package registers with Go's image package for automatic format detection:
 ```go
 import (
     "image"
-    _ "github.com/jpfielding/dicos.go/pkg/compress/jpeg2k"
+    _ "github.com/jpfielding/goxel/pkg/compress/jpeg2k"
 )
 
 // Auto-detects JPEG 2000 by SOC marker (0xFF4F)

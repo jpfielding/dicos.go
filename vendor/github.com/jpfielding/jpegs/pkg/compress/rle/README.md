@@ -15,7 +15,7 @@ Pure Go implementation of DICOM RLE (Run Length Encoding) using PackBits compres
 ### Encoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/rle"
+import "github.com/jpfielding/goxel/pkg/compress/rle"
 
 err := rle.Encode(writer, img)
 ```
@@ -23,7 +23,7 @@ err := rle.Encode(writer, img)
 ### Decoding
 
 ```go
-import "github.com/jpfielding/dicos.go/pkg/compress/rle"
+import "github.com/jpfielding/goxel/pkg/compress/rle"
 
 // Width and height must be provided (not stored in RLE stream)
 img, err := rle.Decode(data, width, height)

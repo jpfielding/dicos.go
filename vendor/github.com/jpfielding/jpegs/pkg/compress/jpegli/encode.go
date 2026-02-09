@@ -6,8 +6,8 @@ import (
 	"io"
 )
 
-// Encoder encodes images to JPEG Lossless format
-type Encoder struct {
+// Options configures JPEG Lossless encoding.
+type Options struct {
 	// Predictor selection (1-7, default 1)
 	Predictor int
 	// Point transform (0 for lossless)
@@ -15,7 +15,7 @@ type Encoder struct {
 }
 
 // Encode writes img to w in JPEG Lossless format
-func Encode(w io.Writer, img image.Image, opts *Encoder) error {
+func Encode(w io.Writer, img image.Image, opts *Options) error {
 	enc := &encoder{
 		w:         w,
 		predictor: 1,

@@ -5,7 +5,7 @@ import (
 
 	"bytes"
 
-	jpegls "github.com/jpfielding/dicos.go/pkg/compress/jpegls"
+	jpegls "github.com/jpfielding/jpegs/pkg/compress/jpegls"
 )
 
 // NativeFrame represents decoded pixel data compatible with Goxel's interface
