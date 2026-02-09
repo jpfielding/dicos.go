@@ -15,7 +15,8 @@
         "ms-vscode.hexeditor",
         "GitHub.copilot-chat",
         "Google.geminicodeassist",
-        "Anthropic.claude-code"
+        "Anthropic.claude-code",
+        "openai.chatgpt"
       ]
     }
   },
@@ -49,6 +50,11 @@
       "type": "bind",
       "source": "${localEnv:HOME}/.claude",
       "target": "/home/${localEnv:USER:prosight}/.claude"
+    },
+    {
+      "type": "bind",
+      "source": "${localEnv:HOME}/.codex",
+      "target": "/home/${localEnv:USER:prosight}/.codex"
     },
     {
       "type": "bind",

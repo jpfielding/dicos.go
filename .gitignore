@@ -13,3 +13,5 @@ __debug_bin**
 *-code-quality-report.json
 # dont check in binaries of our builds (usually from agentic runs)
 /ctl
+
+*.local.json
