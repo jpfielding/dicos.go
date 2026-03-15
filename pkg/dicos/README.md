@@ -96,7 +96,7 @@ The package supports all standard DICOM VRs:
 ct := dicos.NewCTImage()
 ct.Patient.PatientID = "BAG-001"
 ct.SetPixelData(512, 512, volumeData)
-ct.Codec = dicos.CodecJPEGLS // nil for uncompressed
+ct.Codec = dicos.CodecJPEGLS // nil = uncompressed; non-nil selects codec & transfer syntax
 ct.Write("output.dcs")
 ```
 
@@ -264,7 +264,7 @@ ct.Patient.PatientID = "SCAN-001"
 ct.Study.StudyDescription = "Baggage Scan"
 ct.Series.SeriesDescription = "High Energy"
 ct.SetPixelData(512, 512, volumeData)
-ct.Codec = dicos.CodecJPEGLS // or CodecJPEGLi, CodecRLE, CodecJPEG2000
+ct.Codec = dicos.CodecJPEGLS // nil = uncompressed; or CodecJPEGLi, CodecRLE, CodecJPEG2000
 ct.Write("output.dcs")
 
 // Using functional options for custom datasets
@@ -303,6 +303,7 @@ pkg/dicos/
 ├── decode.go          # Pixel data decompression (JPEG-LS, JPEG, RLE, J2K)
 ├── volume.go          # 3D volume representation
 ├── dataset_builder.go # Functional options for building datasets
+├── codec_setup.go     # Shared pixel-data option logic (Codec nil = uncompressed)
 ├── ct.go              # CT Image IOD
 ├── dx.go              # DX Image IOD
 ├── tdr.go             # Threat Detection Report IOD

@@ -59,10 +59,9 @@ func main() {
         log.Fatal(err)
     }
 
-    // Check if data is compressed
+    // Check if data is compressed (encapsulated)
     if pixelData.IsEncapsulated {
-        log.Println("Pixel data is compressed (encapsulated)")
-        // Decompress if needed
+        log.Println("Pixel data is compressed")
         pixelData, err = dicos.DecompressPixelData(ds, pixelData)
         if err != nil {
             log.Fatal(err)
@@ -108,7 +107,7 @@ func main() {
 
     // Set pixel data and enable JPEG-LS compression
     ct.SetPixelData(512, 512, pixelData)
-    ct.Codec = dicos.CodecJPEGLS // Compress using JPEG-LS (recommended for DICOS)
+    ct.Codec = dicos.CodecJPEGLS // nil = uncompressed; non-nil = compress with this codec
 
     // Write directly to file (calls GetDataset internally)
     _, err := ct.Write("output.dcs")

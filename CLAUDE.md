@@ -85,6 +85,7 @@ go mod vendor
 - `types.go`: Core data structures (`Dataset`, `Element`, `PixelData`, `Frame`). Dataset is a map of Tags to Elements. Elements contain Tag, VR (Value Representation), and typed Value.
 - `dataset_builder.go`: Functional options pattern for creating DICOS datasets. Provides `WithElement`, `WithPixelData`, `WithModule`, `WithFileMeta`, and `WithSequence` options.
 - `decode.go`: Decompression logic for encapsulated pixel data. Routes to appropriate codec (JPEG-LS, JPEG 2000, RLE, JPEG Lossless) based on transfer syntax.
+- `codec_setup.go`: Shared pixel data option logic used by all modality builders. Determines whether to compress, pass through raw, or reject invalid combinations based on `Codec` (nil = uncompressed) and `PixelData.IsEncapsulated`.
 - IOD-specific files (`ct.go`, `dx.go`, `tdr.go`, `ait2d.go`, `ait3d.go`): High-level constructors (e.g., `NewCTImage()`, `NewDXImage()`) that initialize datasets with required modules and sensible defaults for each modality.
 
 **`pkg/dicos/module/`** - DICOM Information Object Definition (IOD) modules
@@ -160,8 +161,7 @@ ct.Patient.PatientID = "BAG-001"
 ct.Rows = 512
 ct.Columns = 512
 ct.PixelData = pixelData
-ct.UseCompression = true
-ct.CompressionCodec = "jpeg-ls"
+ct.Codec = dicos.CodecJPEGLS // nil = uncompressed
 dataset, err := ct.GetDataset()
 ```
 
@@ -179,7 +179,8 @@ Pixel data can be native (uncompressed) or encapsulated (compressed):
 - Native: `[]uint16` arrays stored directly, multiple frames concatenated
 - Encapsulated: Each frame stored as separate compressed blob with Basic Offset Table
 - The library automatically detects and handles both formats during read
-- During write, `UseCompression` flag determines which format to use
+- During write, `Codec` determines the format: `nil` = uncompressed (native), non-nil = compress with that codec (encapsulated)
+- Already-encapsulated pixel data (e.g., read from a file) must still have `Codec` set so the dataset declares the correct transfer syntax
 
 ### Energy Level Detection
 DICOS files from dual-energy scanners encode energy level via multiple fallback strategies:
