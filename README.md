@@ -60,7 +60,7 @@ func main() {
     }
 
     // Check if data is compressed (encapsulated)
-    if pixelData.IsEncapsulated {
+    if pixelData.IsEncapsulated() {
         log.Println("Pixel data is compressed")
         pixelData, err = dicos.DecompressPixelData(ds, pixelData)
         if err != nil {
@@ -194,7 +194,7 @@ if err != nil {
 }
 
 // Decompressing pixel data
-if pd.IsEncapsulated {
+if pd.IsEncapsulated() {
     pd, err = dicos.DecompressPixelData(ds, pd)
     if err != nil {
         // Common errors:

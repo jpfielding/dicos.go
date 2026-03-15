@@ -266,8 +266,7 @@ func (r *Reader) skipUndefinedLengthSequence() (interface{}, error) {
 // readEncapsulatedPixelData reads encapsulated (compressed) pixel data
 func (r *Reader) readEncapsulatedPixelData() (*PixelData, error) {
 	pd := &PixelData{
-		IsEncapsulated: true,
-		Frames:         []Frame{},
+		Frames: []Frame{},
 	}
 
 	// Read Basic Offset Table (Item Tag FFFE,E000)

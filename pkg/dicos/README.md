@@ -214,6 +214,10 @@ if elem, ok := ds.FindElement(0x0010, 0x0020); ok {
 
 ### Working with Pixel Data
 
+`IsEncapsulated()` is a computed method on `PixelData` — it checks the first frame's contents
+rather than being a stored field. Frames with `CompressedData` are encapsulated; frames with
+`Data` are native.
+
 ```go
 // Get pixel data (handles both native and encapsulated)
 pd, err := ds.GetPixelData()
@@ -221,11 +225,12 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Check if compressed
-if pd.IsEncapsulated {
+// Check if compressed (derived from frame contents)
+if pd.IsEncapsulated() {
     // Access compressed frames
-    for i, frame := range pd.Frames {
+    for _, frame := range pd.Frames {
         compressedBytes := frame.CompressedData
+        // Decompress using appropriate codec...
     }
 } else {
     // Access raw pixel values
@@ -257,6 +262,9 @@ min, max := vol.MinMax()
 
 ### Writing DICOS Files
 
+`Codec` is the single source of truth for compression intent: `nil` means uncompressed,
+non-nil compresses with that codec and selects the matching transfer syntax.
+
 ```go
 // Using high-level IOD types
 ct := dicos.NewCTImage()
@@ -273,7 +281,7 @@ ds, err := dicos.NewDataset(
     dicos.WithElement(tag.PatientID, "PATIENT-001"),
     dicos.WithElement(tag.Rows, 512),
     dicos.WithElement(tag.Columns, 512),
-    dicos.WithPixelData(512, 512, 16, pixelData, dicos.CodecJPEGLS),
+    dicos.WithPixelData(512, 512, 16, pixelData, dicos.CodecJPEGLS), // nil codec = uncompressed
 )
 dicos.WriteFile("custom.dcs", ds)
 ```

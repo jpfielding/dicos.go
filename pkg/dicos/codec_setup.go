@@ -9,7 +9,7 @@ func pixelDataOption(rows, cols, bitsAllocated int, pd *PixelData, codec Codec) 
 		return nil, nil
 	}
 
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		if codec == nil {
 			return nil, fmt.Errorf("encapsulated pixel data requires Codec to be set")
 		}

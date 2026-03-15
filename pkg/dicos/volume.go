@@ -129,7 +129,7 @@ func VolumeFromDataset(ds *Dataset) (*Volume, error) {
 	vol := NewVolume(cols, rows, numFrames)
 
 	// Copy pixel data
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		// Need to decode each frame
 		// TODO: Implement JPEG-LS decoding here
 		return nil, fmt.Errorf("encapsulated pixel data requires decoding - use DecodeVolume")

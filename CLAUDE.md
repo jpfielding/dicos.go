@@ -85,7 +85,7 @@ go mod vendor
 - `types.go`: Core data structures (`Dataset`, `Element`, `PixelData`, `Frame`). Dataset is a map of Tags to Elements. Elements contain Tag, VR (Value Representation), and typed Value.
 - `dataset_builder.go`: Functional options pattern for creating DICOS datasets. Provides `WithElement`, `WithPixelData`, `WithModule`, `WithFileMeta`, and `WithSequence` options.
 - `decode.go`: Decompression logic for encapsulated pixel data. Routes to appropriate codec (JPEG-LS, JPEG 2000, RLE, JPEG Lossless) based on transfer syntax.
-- `codec_setup.go`: Shared pixel data option logic used by all modality builders. Determines whether to compress, pass through raw, or reject invalid combinations based on `Codec` (nil = uncompressed) and `PixelData.IsEncapsulated`.
+- `codec_setup.go`: Shared pixel data option logic used by all modality builders. Determines whether to compress, pass through raw, or reject invalid combinations based on `Codec` (nil = uncompressed) and `PixelData.IsEncapsulated()`.
 - IOD-specific files (`ct.go`, `dx.go`, `tdr.go`, `ait2d.go`, `ait3d.go`): High-level constructors (e.g., `NewCTImage()`, `NewDXImage()`) that initialize datasets with required modules and sensible defaults for each modality.
 
 **`pkg/dicos/module/`** - DICOM Information Object Definition (IOD) modules
@@ -149,7 +149,7 @@ The library uses functional options pattern for building datasets:
 ds, err := dicos.NewDataset(
     dicos.WithFileMeta(sopClassUID, sopInstanceUID, transferSyntaxUID),
     dicos.WithModule(patient.ToTags()),
-    dicos.WithPixelData(rows, cols, bitsAllocated, pixelData, compress, codec),
+    dicos.WithPixelData(rows, cols, bitsAllocated, pixelData, codec), // nil codec = uncompressed
 )
 ```
 
@@ -160,7 +160,7 @@ ct := dicos.NewCTImage()
 ct.Patient.PatientID = "BAG-001"
 ct.Rows = 512
 ct.Columns = 512
-ct.PixelData = pixelData
+ct.SetPixelData(512, 512, pixelData)
 ct.Codec = dicos.CodecJPEGLS // nil = uncompressed
 dataset, err := ct.GetDataset()
 ```
@@ -175,12 +175,22 @@ if ok {
 ```
 
 ### Pixel Data Handling
-Pixel data can be native (uncompressed) or encapsulated (compressed):
-- Native: `[]uint16` arrays stored directly, multiple frames concatenated
-- Encapsulated: Each frame stored as separate compressed blob with Basic Offset Table
-- The library automatically detects and handles both formats during read
-- During write, `Codec` determines the format: `nil` = uncompressed (native), non-nil = compress with that codec (encapsulated)
-- Already-encapsulated pixel data (e.g., read from a file) must still have `Codec` set so the dataset declares the correct transfer syntax
+
+Two concepts control pixel data: **`Codec`** (compression intent) and **`IsEncapsulated()`** (data state).
+
+**`Codec`** is the single source of truth for compression intent during writes:
+- `nil` = uncompressed (native pixel data, Explicit VR Little Endian transfer syntax)
+- Non-nil = compress with that codec (encapsulated pixel data, codec-specific transfer syntax)
+
+**`IsEncapsulated()`** is a computed method on `PixelData` — not a stored field. It derives from frame contents:
+- If `Frame.CompressedData != nil` → encapsulated (compressed)
+- If `Frame.Data != nil` → native (uncompressed)
+- Empty `PixelData` → not encapsulated
+
+This means:
+- During **read**, the parser populates `CompressedData` or `Data` per frame, and `IsEncapsulated()` just works
+- During **write**, `Codec` determines what happens: native data gets compressed if `Codec != nil`, or passed through raw if `Codec == nil`
+- **Already-encapsulated pixel data** (e.g., read from a file) must still have `Codec` set on the builder so the dataset declares the correct transfer syntax
 
 ### Energy Level Detection
 DICOS files from dual-energy scanners encode energy level via multiple fallback strategies:

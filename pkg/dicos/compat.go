@@ -102,7 +102,7 @@ func ConvertToFrameInfo(pd *PixelData, rows, cols int) []*FrameInfo {
 	frames := make([]*FrameInfo, len(pd.Frames))
 
 	for i, frame := range pd.Frames {
-		if pd.IsEncapsulated {
+		if pd.IsEncapsulated() {
 			frames[i] = &FrameInfo{
 				IsEncapsulated: true,
 				EncapsulatedData: &EncapsulatedData{

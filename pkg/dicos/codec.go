@@ -43,7 +43,7 @@ import (
 //
 //	ds, _ := dicos.ReadFile("scan.dcs")
 //	pd, _ := ds.GetPixelData()
-//	if pd.IsEncapsulated {
+//	if pd.IsEncapsulated() {
 //		ts := dicos.GetTransferSyntax(ds)
 //		codec := dicos.CodecByTransferSyntax(ts.UID())
 //		for i, frame := range pd.Frames {

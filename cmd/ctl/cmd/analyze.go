@@ -91,7 +91,7 @@ func runAnalyze(filePath string, dumpFrame int, outPath string) error {
 	}
 
 	fmt.Println("=== Pixel Data ===")
-	fmt.Printf("IsEncapsulated: %v\n", pd.IsEncapsulated)
+	fmt.Printf("IsEncapsulated: %v\n", pd.IsEncapsulated())
 	fmt.Printf("Frames: %d\n", len(pd.Frames))
 
 	if len(pd.Offsets) > 0 {
@@ -105,7 +105,7 @@ func runAnalyze(filePath string, dumpFrame int, outPath string) error {
 		fr := pd.Frames[dumpFrame]
 		var data []byte
 
-		if pd.IsEncapsulated {
+		if pd.IsEncapsulated() {
 			data = fr.CompressedData
 		} else {
 			// Convert []uint16 to []byte (Little Endian)
@@ -134,7 +134,7 @@ func runAnalyze(filePath string, dumpFrame int, outPath string) error {
 		fr := pd.Frames[i]
 		fmt.Printf("\n--- Frame %d ---\n", i)
 
-		if pd.IsEncapsulated {
+		if pd.IsEncapsulated() {
 			fmt.Printf("Compressed size: %d bytes\n", len(fr.CompressedData))
 			if len(fr.CompressedData) > 20 {
 				fmt.Printf("First 20 bytes: % X\n", fr.CompressedData[:20])

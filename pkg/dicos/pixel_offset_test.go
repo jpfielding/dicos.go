@@ -36,7 +36,7 @@ func TestCTImage_LuggageFishtank(t *testing.T) {
 	// Native (uncompressed) pixel data
 	pd, err := ds.GetPixelData()
 	require.NoError(t, err)
-	assert.False(t, pd.IsEncapsulated, "pixel data should be native (not encapsulated)")
+	assert.False(t, pd.IsEncapsulated(), "pixel data should be native (not encapsulated)")
 
 	// 160 frames, each 256×256 uint16 pixels
 	assert.Equal(t, 160, len(pd.Frames), "should have 160 frames")

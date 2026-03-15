@@ -262,8 +262,7 @@ func WithPixelData(rows, cols, bitsAllocated int, data []uint16, codec Codec) Op
 		compress := codec != nil
 
 		pd := &PixelData{
-			IsEncapsulated: compress,
-			Frames:         make([]Frame, numFrames),
+			Frames: make([]Frame, numFrames),
 		}
 
 		if compress {
@@ -362,7 +361,7 @@ func WithRawPixelData(pd *PixelData) Option {
 			return nil
 		}
 		vr := "OB"
-		if !pd.IsEncapsulated && len(pd.Frames) > 0 && len(pd.Frames[0].Data) > 0 {
+		if !pd.IsEncapsulated() && len(pd.Frames) > 0 && len(pd.Frames[0].Data) > 0 {
 			vr = "OW"
 		}
 		t := Tag{Group: 0x7FE0, Element: 0x0010}

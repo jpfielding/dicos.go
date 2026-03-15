@@ -32,7 +32,7 @@ func DecodeVolume(ds *Dataset) (*Volume, error) {
 
 	vol := NewVolume(cols, rows, numFrames)
 
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		// Determine Transfer Syntax
 		ts := GetTransferSyntax(ds)
 
@@ -40,7 +40,7 @@ func DecodeVolume(ds *Dataset) (*Volume, error) {
 		for z, frame := range pd.Frames {
 			var img image.Image
 			// This nested check is redundant but kept as per instruction
-			if pd.IsEncapsulated {
+			if pd.IsEncapsulated() {
 				decoded, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
 				if err != nil {
 					return nil, fmt.Errorf("decoding frame %d: %w", z, err)
@@ -169,7 +169,7 @@ func DecodeFrameData(pd *PixelData, frameIndex int, rows, cols int, ts TransferS
 	pixelCount := rows * cols
 	data := make([]uint16, pixelCount)
 
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		decoded, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
 		if err != nil {
 			return nil, fmt.Errorf("decode failed: %w", err)

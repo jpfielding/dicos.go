@@ -474,12 +474,12 @@ func GetEnergyLevel(ds *Dataset) string {
 //
 // Returns *PixelData in either native (uncompressed) or encapsulated (compressed) format:
 //
-// Native Format (IsEncapsulated=false):
+// Native Format (IsEncapsulated()=false):
 //   - Frame.Data contains []uint16 pixel values in row-major order
 //   - Pixels ordered left-to-right, top-to-bottom within each frame
 //   - Multi-frame images have frames stored sequentially
 //
-// Encapsulated Format (IsEncapsulated=true):
+// Encapsulated Format (IsEncapsulated()=true):
 //   - Frame.CompressedData contains compressed bitstream bytes
 //   - Each frame compressed independently per DICOM encapsulation rules
 //   - Must decompress using DecompressPixelData() with appropriate codec
@@ -495,7 +495,7 @@ func GetEnergyLevel(ds *Dataset) string {
 //	if err != nil {
 //		log.Fatal(err)
 //	}
-//	if pd.IsEncapsulated {
+//	if pd.IsEncapsulated() {
 //		// Compressed - need to decompress
 //		pd, err = dicos.DecompressPixelData(ds, pd)
 //	}
@@ -543,8 +543,7 @@ func (ds *Dataset) GetPixelData() (*PixelData, error) {
 	}
 
 	pd := &PixelData{
-		IsEncapsulated: false,
-		Frames:         make([]Frame, numFrames),
+		Frames: make([]Frame, numFrames),
 	}
 
 	bytesPerPixel := (bitsAllocated + 7) / 8

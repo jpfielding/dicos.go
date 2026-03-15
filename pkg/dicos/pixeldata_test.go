@@ -9,7 +9,6 @@ import (
 
 func TestPixelData_GetFrame(t *testing.T) {
 	pd := &PixelData{
-		IsEncapsulated: false,
 		Frames: []Frame{
 			{Data: []uint16{1, 2, 3, 4}},
 			{Data: []uint16{5, 6, 7, 8}},
@@ -49,10 +48,10 @@ func TestPixelData_NumFrames(t *testing.T) {
 }
 
 func TestPixelData_IsCompressed(t *testing.T) {
-	uncompressed := &PixelData{IsEncapsulated: false}
+	uncompressed := &PixelData{Frames: []Frame{{Data: []uint16{1}}}}
 	assert.False(t, uncompressed.IsCompressed())
 
-	compressed := &PixelData{IsEncapsulated: true}
+	compressed := &PixelData{Frames: []Frame{{CompressedData: []byte{1}}}}
 	assert.True(t, compressed.IsCompressed())
 }
 
@@ -69,7 +68,6 @@ func TestPixelData_HasFrames(t *testing.T) {
 func TestPixelData_FrameSize(t *testing.T) {
 	// Uncompressed
 	pd := &PixelData{
-		IsEncapsulated: false,
 		Frames: []Frame{
 			{Data: []uint16{1, 2, 3, 4, 5, 6}},
 		},
@@ -78,7 +76,6 @@ func TestPixelData_FrameSize(t *testing.T) {
 
 	// Compressed - size unknown
 	compressed := &PixelData{
-		IsEncapsulated: true,
 		Frames: []Frame{
 			{CompressedData: []byte{1, 2, 3, 4}},
 		},
@@ -93,7 +90,6 @@ func TestPixelData_FrameSize(t *testing.T) {
 func TestPixelData_TotalPixels(t *testing.T) {
 	// Uncompressed with multiple frames
 	pd := &PixelData{
-		IsEncapsulated: false,
 		Frames: []Frame{
 			{Data: []uint16{1, 2, 3}},
 			{Data: []uint16{4, 5}},
@@ -104,8 +100,7 @@ func TestPixelData_TotalPixels(t *testing.T) {
 
 	// Compressed - unknown until decompression
 	compressed := &PixelData{
-		IsEncapsulated: true,
-		Frames:         []Frame{{CompressedData: []byte{1, 2, 3}}},
+		Frames: []Frame{{CompressedData: []byte{1, 2, 3}}},
 	}
 	assert.Equal(t, 0, compressed.TotalPixels())
 
@@ -117,7 +112,6 @@ func TestPixelData_TotalPixels(t *testing.T) {
 func TestPixelData_GetFlatData(t *testing.T) {
 	// Uncompressed multi-frame
 	pd := &PixelData{
-		IsEncapsulated: false,
 		Frames: []Frame{
 			{Data: []uint16{1, 2, 3}},
 			{Data: []uint16{4, 5, 6}},
@@ -129,8 +123,7 @@ func TestPixelData_GetFlatData(t *testing.T) {
 
 	// Compressed - returns nil
 	compressed := &PixelData{
-		IsEncapsulated: true,
-		Frames:         []Frame{{CompressedData: []byte{1, 2, 3}}},
+		Frames: []Frame{{CompressedData: []byte{1, 2, 3}}},
 	}
 	assert.Nil(t, compressed.GetFlatData())
 }
@@ -138,8 +131,7 @@ func TestPixelData_GetFlatData(t *testing.T) {
 func TestPixelData_Integration(t *testing.T) {
 	// Create a multi-frame pixel data
 	pd := &PixelData{
-		IsEncapsulated: false,
-		Frames:         make([]Frame, 3),
+		Frames: make([]Frame, 3),
 	}
 
 	// Fill with test data

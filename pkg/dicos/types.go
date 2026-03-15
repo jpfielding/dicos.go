@@ -49,25 +49,36 @@ type Tag = tag.Tag
 
 // PixelData represents pixel data in either native (uncompressed) or encapsulated (compressed) format.
 //
-// Native Format (IsEncapsulated=false):
+// Native Format (IsEncapsulated()=false):
 //   - Each Frame has Data populated as []uint16 pixel values
 //   - Pixels are stored in row-major order (left-to-right, top-to-bottom)
 //   - Multi-frame images store each frame sequentially
 //   - Use GetFlatData() to concatenate all frames into a single slice
 //
-// Encapsulated Format (IsEncapsulated=true):
+// Encapsulated Format (IsEncapsulated()=true):
 //   - Each Frame has CompressedData populated as compressed bitstream bytes
 //   - Offsets contains the Basic Offset Table per DICOM Part 5 Section 8.2
 //   - Each frame is compressed independently (intra-frame only)
 //   - Must be decompressed using appropriate codec (see decode.go)
 //
-// The format is determined by the Transfer Syntax UID in the dataset:
-//   - Explicit/Implicit VR Little Endian → Native
-//   - JPEG-LS, JPEG 2000, RLE, etc. → Encapsulated
+// The format is determined by the frame contents: frames with CompressedData
+// are encapsulated, frames with Data are native.
 type PixelData struct {
-	IsEncapsulated bool
-	Frames         []Frame
-	Offsets        []uint32 // Basic Offset Table for encapsulated data
+	Frames  []Frame
+	Offsets []uint32 // Basic Offset Table for encapsulated data
+}
+
+// IsEncapsulated returns true if the pixel data contains compressed (encapsulated) frames.
+//
+// This is derived from the frame contents: if the first frame has CompressedData,
+// the pixel data is encapsulated. Frames are homogeneous (all native or all compressed).
+//
+// Returns false if there are no frames.
+func (pd *PixelData) IsEncapsulated() bool {
+	if len(pd.Frames) == 0 {
+		return false
+	}
+	return pd.Frames[0].CompressedData != nil
 }
 
 // Frame represents a single frame (image slice) of pixel data.
@@ -105,13 +116,13 @@ type Frame struct {
 //	if err != nil {
 //		log.Fatal(err)
 //	}
-//	if pd.IsEncapsulated {
+//	if pd.IsEncapsulated() {
 //		// Must decompress first
 //		pd, err = DecompressPixelData(ds, pd)
 //	}
 //	flatData := pd.GetFlatData() // All frames as single slice
 func (pd *PixelData) GetFlatData() []uint16 {
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		return nil
 	}
 	var totalPixels int
@@ -161,7 +172,7 @@ func (pd *PixelData) NumFrames() int {
 
 // IsCompressed returns true if the pixel data is encapsulated (compressed).
 //
-// This is an alias for checking pd.IsEncapsulated for better readability.
+// This is an alias for IsEncapsulated() for better readability.
 //
 // Example:
 //
@@ -170,7 +181,7 @@ func (pd *PixelData) NumFrames() int {
 //		// Need to decompress
 //	}
 func (pd *PixelData) IsCompressed() bool {
-	return pd.IsEncapsulated
+	return pd.IsEncapsulated()
 }
 
 // HasFrames returns true if the pixel data contains at least one frame.
@@ -192,7 +203,7 @@ func (pd *PixelData) FrameSize() int {
 	if len(pd.Frames) == 0 {
 		return 0
 	}
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		return 0 // Unknown until decompression
 	}
 	return len(pd.Frames[0].Data)
@@ -208,7 +219,7 @@ func (pd *PixelData) FrameSize() int {
 //	totalPixels := pd.TotalPixels()
 //	avgValue := sum / float64(totalPixels)
 func (pd *PixelData) TotalPixels() int {
-	if pd.IsEncapsulated {
+	if pd.IsEncapsulated() {
 		return 0
 	}
 	total := 0

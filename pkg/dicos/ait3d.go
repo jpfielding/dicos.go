@@ -93,8 +93,7 @@ func (ait *AIT3DImage) SetPixelData(rows, cols, frames int, data []uint16) {
 
 	pixelsPerFrame := rows * cols
 	pd := &PixelData{
-		IsEncapsulated: false,
-		Frames:         make([]Frame, frames),
+		Frames: make([]Frame, frames),
 	}
 
 	for i := 0; i < frames; i++ {

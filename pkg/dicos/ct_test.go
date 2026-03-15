@@ -80,7 +80,6 @@ func TestCTImage_GetDataset_EncapsulatedPixelDataRequiresCodec(t *testing.T) {
 	ct.Rows = 1
 	ct.Columns = 1
 	ct.PixelData = &dicos.PixelData{
-		IsEncapsulated: true,
 		Frames: []dicos.Frame{
 			{CompressedData: []byte{0x00, 0x00}},
 		},
@@ -98,7 +97,6 @@ func TestCTImage_GetDataset_EncapsulatedPixelDataUsesCodecTransferSyntax(t *test
 	ct.Columns = 1
 	ct.Codec = dicos.CodecRLE
 	ct.PixelData = &dicos.PixelData{
-		IsEncapsulated: true,
 		Frames: []dicos.Frame{
 			{CompressedData: []byte{0x00, 0x00}},
 		},

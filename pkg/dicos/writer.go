@@ -138,7 +138,7 @@ func encodeValue(v interface{}, vr string) ([]byte, bool, error) {
 
 	// Special case: PixelData
 	if pd, ok := v.(*PixelData); ok {
-		if pd.IsEncapsulated {
+		if pd.IsEncapsulated() {
 			b, err := encodeEncapsulatedPixelData(pd)
 			return b, true, err // Undefined Length
 		}

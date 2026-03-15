@@ -368,8 +368,7 @@ func (ct *CTImage) SetPixelData(rows, cols int, data []uint16) {
 	ct.Image.KV[tag.NumberOfFrames] = fmt.Sprintf("%d", numFrames) // IS VR
 
 	pd := &PixelData{
-		IsEncapsulated: false,
-		Frames:         make([]Frame, numFrames),
+		Frames: make([]Frame, numFrames),
 	}
 
 	for i := range numFrames {

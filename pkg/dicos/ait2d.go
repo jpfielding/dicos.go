@@ -89,8 +89,7 @@ func (ait *AIT2DImage) SetPixelData(rows, cols int, data []uint16) {
 	}
 
 	pd := &PixelData{
-		IsEncapsulated: false,
-		Frames:         make([]Frame, numFrames),
+		Frames: make([]Frame, numFrames),
 	}
 
 	for i := 0; i < numFrames; i++ {
