@@ -161,11 +161,12 @@ func (ait *AIT2DImage) GetDataset() (*Dataset, error) {
 	// BodyRegion, PrivacyMask, ScanViewAngle, ScannerType
 
 	// Pixel Data
-	if ait.Codec != nil && ait.PixelData != nil && !ait.PixelData.IsEncapsulated {
-		flatData := ait.PixelData.GetFlatData()
-		opts = append(opts, WithPixelData(ait.Rows, ait.Columns, ait.BitsAllocated, flatData, ait.Codec))
-	} else if ait.PixelData != nil {
-		opts = append(opts, WithRawPixelData(ait.PixelData))
+	pixelOpt, err := pixelDataOption(ait.Rows, ait.Columns, ait.BitsAllocated, ait.PixelData, ait.Codec)
+	if err != nil {
+		return nil, err
+	}
+	if pixelOpt != nil {
+		opts = append(opts, pixelOpt)
 	}
 
 	return NewDataset(opts...)

@@ -184,11 +184,12 @@ func (dx *DXImage) GetDataset() (*Dataset, error) {
 	}
 
 	// 4. Pixel Data
-	if dx.Codec != nil && dx.PixelData != nil && !dx.PixelData.IsEncapsulated {
-		flatData := dx.PixelData.GetFlatData()
-		opts = append(opts, WithPixelData(dx.Rows, dx.Columns, dx.BitsAllocated, flatData, dx.Codec))
-	} else if dx.PixelData != nil {
-		opts = append(opts, WithRawPixelData(dx.PixelData))
+	pixelOpt, err := pixelDataOption(dx.Rows, dx.Columns, dx.BitsAllocated, dx.PixelData, dx.Codec)
+	if err != nil {
+		return nil, err
+	}
+	if pixelOpt != nil {
+		opts = append(opts, pixelOpt)
 	}
 
 	return NewDataset(opts...)

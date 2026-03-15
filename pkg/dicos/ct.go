@@ -90,10 +90,10 @@ type CTImage struct {
 	PixelRepresent    uint16
 	Rows              int
 	Columns           int
-	RescaleIntercept interface{} // float64 or string (DS)
-	RescaleSlope     interface{} // float64 or string (DS)
-	RescaleType      string
-	Codec            Codec // nil = uncompressed
+	RescaleIntercept  interface{} // float64 or string (DS)
+	RescaleSlope      interface{} // float64 or string (DS)
+	RescaleType       string
+	Codec             Codec // nil = uncompressed
 }
 
 // CTImageModule is a legacy simple container for CT Image module attributes.
@@ -203,7 +203,7 @@ func NewCTImage() *CTImage {
 // GetDataset builds and returns the complete DICOS Dataset from the CTImage.
 //
 // This method:
-//  1. Determines transfer syntax based on ct.Codec or encapsulated pixel data
+//  1. Determines transfer syntax from ct.Codec
 //  2. Adds File Meta Information (Group 0002) elements
 //  3. Composes all modules into the dataset
 //  4. Adds convenience field values (Rows, Columns, Rescale, etc.)
@@ -211,8 +211,10 @@ func NewCTImage() *CTImage {
 //
 // Transfer Syntax Selection:
 //   - If Codec != nil: Uses codec's transfer syntax UID (e.g., JPEG-LS)
-//   - If PixelData.IsEncapsulated: Defaults to JPEG-LS Lossless
 //   - Otherwise: Explicit VR Little Endian (uncompressed)
+//
+// Already-encapsulated pixel data must still provide Codec so the dataset can
+// declare the correct transfer syntax instead of relying on a guessed default.
 //
 // The returned Dataset can be written to disk using Write() or passed to other
 // DICOS processing functions.
@@ -229,13 +231,10 @@ func NewCTImage() *CTImage {
 func (ct *CTImage) GetDataset() (*Dataset, error) {
 	opts := make([]Option, 0, 32)
 
-	// 1. Determine transfer syntax based on compression
+	// 1. Determine transfer syntax based on codec selection
 	ts := string(transfer.ExplicitVRLittleEndian)
 	if ct.Codec != nil {
 		ts = ct.Codec.TransferSyntaxUID()
-	} else if ct.PixelData != nil && ct.PixelData.IsEncapsulated {
-		// Already encapsulated data - use JPEG-LS as default
-		ts = string(transfer.JPEGLSLossless)
 	}
 
 	// 2. File Meta Information
@@ -294,11 +293,12 @@ func (ct *CTImage) GetDataset() (*Dataset, error) {
 	}
 
 	// 7. Pixel Data
-	if ct.Codec != nil && ct.PixelData != nil && !ct.PixelData.IsEncapsulated {
-		flatData := ct.PixelData.GetFlatData()
-		opts = append(opts, WithPixelData(ct.Rows, ct.Columns, int(ct.BitsAllocated), flatData, ct.Codec))
-	} else if ct.PixelData != nil {
-		opts = append(opts, WithRawPixelData(ct.PixelData))
+	pixelOpt, err := pixelDataOption(ct.Rows, ct.Columns, int(ct.BitsAllocated), ct.PixelData, ct.Codec)
+	if err != nil {
+		return nil, err
+	}
+	if pixelOpt != nil {
+		opts = append(opts, pixelOpt)
 	}
 
 	return NewDataset(opts...)
@@ -315,7 +315,7 @@ func (ct *CTImage) WriteTo(w io.Writer) (int64, error) {
 
 // Write writes the CT Image to a file (convenience wrapper)
 func (ct *CTImage) Write(path string) (int64, error) {
-	slog.Debug("Writing DICOS file", "path", path, "sop_instance_uid", ct.SOPCommon.SOPInstanceUID, "compressed", ct.PixelData != nil && ct.PixelData.IsEncapsulated)
+	slog.Debug("Writing DICOS file", "path", path, "sop_instance_uid", ct.SOPCommon.SOPInstanceUID, "compressed", ct.Codec != nil)
 	f, err := os.Create(path)
 	if err != nil {
 		return 0, err

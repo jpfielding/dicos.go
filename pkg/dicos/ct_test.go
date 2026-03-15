@@ -74,3 +74,38 @@ func TestCTImage_WriteCompressed(t *testing.T) {
 	syntax := dicos.GetTransferSyntax(ds)
 	assert.Equal(t, dicos.JPEGLSLossless, syntax, "Expected JPEG-LS Lossless transfer syntax")
 }
+
+func TestCTImage_GetDataset_EncapsulatedPixelDataRequiresCodec(t *testing.T) {
+	ct := dicos.NewCTImage()
+	ct.Rows = 1
+	ct.Columns = 1
+	ct.PixelData = &dicos.PixelData{
+		IsEncapsulated: true,
+		Frames: []dicos.Frame{
+			{CompressedData: []byte{0x00, 0x00}},
+		},
+	}
+
+	ds, err := ct.GetDataset()
+	require.Error(t, err)
+	assert.Nil(t, ds)
+	assert.Contains(t, err.Error(), "requires Codec")
+}
+
+func TestCTImage_GetDataset_EncapsulatedPixelDataUsesCodecTransferSyntax(t *testing.T) {
+	ct := dicos.NewCTImage()
+	ct.Rows = 1
+	ct.Columns = 1
+	ct.Codec = dicos.CodecRLE
+	ct.PixelData = &dicos.PixelData{
+		IsEncapsulated: true,
+		Frames: []dicos.Frame{
+			{CompressedData: []byte{0x00, 0x00}},
+		},
+	}
+
+	ds, err := ct.GetDataset()
+	require.NoError(t, err)
+
+	assert.Equal(t, dicos.CodecRLE.TransferSyntaxUID(), string(ds.TransferSyntax()))
+}
