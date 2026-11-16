@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"slices"
+	"strings"
 
 	"github.com/jpfielding/dicos.go/pkg/dicos/tag"
 	"github.com/jpfielding/dicos.go/pkg/dicos/transfer"
@@ -313,6 +315,9 @@ func (r *Reader) readHeader(t Tag) (vr string, vl uint32, err error) {
 		return "", 0, err
 	}
 	vr = string(vrb[:])
+	if !knownVR(vr) {
+		vr = "UN" // unknown VR bytes: treat as UN (long VR form)
+	}
 	if isLongVR(vr) {
 		var reserved [2]byte
 		if err := r.readExact(reserved[:], "explicit VR header"); err != nil {
@@ -341,30 +346,169 @@ func (r *Reader) readElementWithTag(t Tag, depth int) (*Element, error) {
 // readValue reads the value based on VR and VL.
 func (r *Reader) readValue(t Tag, vr string, vl uint32, depth int) (interface{}, error) {
 	if vl == undefinedLength {
-		return r.readUndefinedLengthValue(t, depth)
+		return r.readUndefinedLengthValue(t, vr, depth)
 	}
 	data, err := r.readBody(vl, "element value")
 	if err != nil {
 		return nil, err
 	}
-	return parseValue(vr, data)
+	if vr == "SQ" {
+		return r.parseSequenceItems(data, depth)
+	}
+	return parseValue(vr, data), nil
 }
 
 // readUndefinedLengthValue handles encapsulated pixel data and sequences
-// with undefined length.
-func (r *Reader) readUndefinedLengthValue(t Tag, depth int) (interface{}, error) {
+// with undefined length. Any other undefined-length value is skipped and
+// stored as nil.
+func (r *Reader) readUndefinedLengthValue(t Tag, vr string, depth int) (interface{}, error) {
 	if t == tag.PixelData {
 		return r.readEncapsulatedPixelData()
 	}
-	// Skip the sequence by reading until the Sequence Delimitation Item.
+	if vr == "SQ" {
+		return r.readSequenceItems(depth)
+	}
 	return nil, r.skipUndefinedLength(depth)
+}
+
+func nestingError() error { return fmt.Errorf("%w (%d)", ErrNestingTooDeep, MaxNestingDepth) }
+
+// readSequenceItems reads items of an undefined-length sequence up to its
+// Sequence Delimitation Item.
+func (r *Reader) readSequenceItems(depth int) ([]*Dataset, error) {
+	if depth >= MaxNestingDepth {
+		return nil, nestingError()
+	}
+	items := []*Dataset{}
+	for {
+		t, err := r.readTagRequired("sequence item")
+		if err != nil {
+			return nil, err
+		}
+		n, err := r.readU32("sequence item length")
+		if err != nil {
+			return nil, err
+		}
+		if t == tag.SequenceDelimitationItem {
+			return items, nil
+		}
+		if t != tag.Item {
+			return nil, &UnexpectedTagError{Expected: tag.Item, Got: t, Context: "sequence item"}
+		}
+		var item *Dataset
+		if n == undefinedLength {
+			item, err = r.readItemUndefinedLength(depth)
+		} else {
+			item, err = r.readItemFixedLength(n, depth)
+		}
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+}
+
+// readItemUndefinedLength reads an item delimited by an Item Delimitation
+// Item.
+func (r *Reader) readItemUndefinedLength(depth int) (*Dataset, error) {
+	ds := &Dataset{Elements: make(map[Tag]*Element)}
+	for {
+		t, err := r.readTagRequired("sequence item element")
+		if err != nil {
+			return nil, err
+		}
+		if t == tag.ItemDelimitationItem {
+			if _, err := r.readU32("item delimiter length"); err != nil {
+				return nil, err
+			}
+			return ds, nil
+		}
+		if t.Group == 0xFFFE {
+			if err := r.skipDelimiter(t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		elem, err := r.readElementWithTag(t, depth+1)
+		if err != nil {
+			return nil, fmt.Errorf("element %v: %w", t, err)
+		}
+		ds.Elements[elem.Tag] = elem
+	}
+}
+
+// readItemFixedLength reads an item of known length and parses it as a
+// nested dataset.
+func (r *Reader) readItemFixedLength(n uint32, depth int) (*Dataset, error) {
+	data, err := r.readBody(n, "fixed-length item body")
+	if err != nil {
+		return nil, err
+	}
+	return r.parseItem(data, depth)
+}
+
+// parseItem parses item bytes as a dataset with this reader's VR mode and
+// limits.
+func (r *Reader) parseItem(data []byte, depth int) (*Dataset, error) {
+	sub := &Reader{
+		MaxElementBytes: r.maxElementBytes(),
+		r:               bytes.NewReader(data),
+		transferSyntax:  r.transferSyntax,
+		tsKnown:         r.tsKnown,
+		explicitVR:      r.explicitVR,
+	}
+	ds := &Dataset{Elements: make(map[Tag]*Element)}
+	err := sub.parseElements(depth+1, func(elem *Element) { ds.Elements[elem.Tag] = elem })
+	if err != nil {
+		return nil, err
+	}
+	return ds, nil
+}
+
+// parseSequenceItems parses the items of a fixed-length sequence value.
+func (r *Reader) parseSequenceItems(data []byte, depth int) ([]*Dataset, error) {
+	if depth >= MaxNestingDepth {
+		return nil, nestingError()
+	}
+	items := []*Dataset{}
+	pos := 0
+	for pos < len(data) {
+		if len(data)-pos < 8 {
+			return nil, &TruncatedError{Offset: int64(pos), Context: "fixed-length SQ item"}
+		}
+		t := Tag{
+			Group:   binary.LittleEndian.Uint16(data[pos:]),
+			Element: binary.LittleEndian.Uint16(data[pos+2:]),
+		}
+		n := binary.LittleEndian.Uint32(data[pos+4:])
+		pos += 8
+		if t == tag.SequenceDelimitationItem {
+			break
+		}
+		if t != tag.Item {
+			return nil, &UnexpectedTagError{Expected: tag.Item, Got: t, Context: "fixed-length SQ item"}
+		}
+		if n == undefinedLength {
+			return nil, ErrUndefinedLengthInFixedSQ
+		}
+		if remaining := len(data) - pos; int64(n) > int64(remaining) {
+			return nil, &LengthError{Length: int64(n), Max: int64(remaining), Err: ErrLengthExceedsBuffer}
+		}
+		item, err := r.parseItem(data[pos:pos+int(n)], depth)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		pos += int(n)
+	}
+	return items, nil
 }
 
 // skipUndefinedLength skips an undefined-length value up to and including
 // its Sequence Delimitation Item.
 func (r *Reader) skipUndefinedLength(depth int) error {
 	if depth >= MaxNestingDepth {
-		return fmt.Errorf("%w (%d)", ErrNestingTooDeep, MaxNestingDepth)
+		return nestingError()
 	}
 	for {
 		t, err := r.readTagRequired("skipped sequence")
@@ -505,58 +649,77 @@ func getImplicitVR(tag Tag) string {
 	return "UN" // Unknown
 }
 
-// parseValue converts raw bytes to typed value based on VR
-func parseValue(vr string, data []byte) (interface{}, error) {
+// knownVR reports whether vr is a DICOM Value Representation.
+func knownVR(vr string) bool {
 	switch vr {
-	case "UI", "SH", "LO", "ST", "LT", "UT", "PN", "CS", "DA", "TM", "DT", "AS", "IS", "DS":
-		// String types - trim null padding
-		s := string(data)
-		for len(s) > 0 && (s[len(s)-1] == 0 || s[len(s)-1] == ' ') {
-			s = s[:len(s)-1]
-		}
-		return s, nil
-	case "US": // Unsigned Short
-		if len(data) == 2 {
-			return binary.LittleEndian.Uint16(data), nil
-		}
-		// Multiple values
-		values := make([]uint16, len(data)/2)
-		for i := range values {
-			values[i] = binary.LittleEndian.Uint16(data[i*2:])
-		}
-		return values, nil
-	case "UL": // Unsigned Long
-		if len(data) == 4 {
-			return binary.LittleEndian.Uint32(data), nil
-		}
-		values := make([]uint32, len(data)/4)
-		for i := range values {
-			values[i] = binary.LittleEndian.Uint32(data[i*4:])
-		}
-		return values, nil
-	case "SS": // Signed Short
-		if len(data) == 2 {
-			return int16(binary.LittleEndian.Uint16(data)), nil
-		}
-	case "SL": // Signed Long
-		if len(data) == 4 {
-			return int32(binary.LittleEndian.Uint32(data)), nil
-		}
-	case "FL": // Float
-		if len(data) == 4 {
-			var f float32
-			binary.Read(bytes.NewReader(data), binary.LittleEndian, &f)
-			return f, nil
-		}
-	case "FD": // Double
-		if len(data) == 8 {
-			var f float64
-			binary.Read(bytes.NewReader(data), binary.LittleEndian, &f)
-			return f, nil
-		}
-	case "OB", "OW", "UN":
-		// Binary data
-		return data, nil
+	case "AE", "AS", "AT", "CS", "DA", "DS", "DT", "FD", "FL", "IS", "LO", "LT",
+		"OB", "OD", "OF", "OL", "OW", "PN", "SH", "SL", "SQ", "SS", "ST", "TM",
+		"UC", "UI", "UL", "UN", "UR", "US", "UT":
+		return true
 	}
-	return data, nil
+	return false
+}
+
+// parseValue converts raw bytes to a typed value based on VR. Numeric
+// values whose length does not fit the VR are returned as raw bytes.
+// Multi-valued strings stay one backslash-separated string.
+func parseValue(vr string, data []byte) interface{} {
+	switch vr {
+	case "AE", "AS", "CS", "DA", "DS", "DT", "IS", "LO", "LT", "PN", "SH", "ST",
+		"TM", "UC", "UI", "UR", "UT":
+		return strings.TrimRight(string(data), "\x00 ")
+	case "US":
+		switch {
+		case len(data) == 2:
+			return binary.LittleEndian.Uint16(data)
+		case len(data) >= 4 && len(data)%2 == 0:
+			values := make([]uint16, len(data)/2)
+			for i := range values {
+				values[i] = binary.LittleEndian.Uint16(data[i*2:])
+			}
+			return values
+		}
+	case "UL":
+		switch {
+		case len(data) == 4:
+			return binary.LittleEndian.Uint32(data)
+		case len(data) >= 8 && len(data)%4 == 0:
+			values := make([]uint32, len(data)/4)
+			for i := range values {
+				values[i] = binary.LittleEndian.Uint32(data[i*4:])
+			}
+			return values
+		}
+	case "SS":
+		if len(data) == 2 {
+			return int16(binary.LittleEndian.Uint16(data))
+		}
+	case "SL":
+		if len(data) == 4 {
+			return int32(binary.LittleEndian.Uint32(data))
+		}
+	case "FL":
+		switch {
+		case len(data) == 4:
+			return math.Float32frombits(binary.LittleEndian.Uint32(data))
+		case len(data) >= 8 && len(data)%4 == 0:
+			values := make([]float32, len(data)/4)
+			for i := range values {
+				values[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4:]))
+			}
+			return values
+		}
+	case "FD":
+		switch {
+		case len(data) == 8:
+			return math.Float64frombits(binary.LittleEndian.Uint64(data))
+		case len(data) >= 16 && len(data)%8 == 0:
+			values := make([]float64, len(data)/8)
+			for i := range values {
+				values[i] = math.Float64frombits(binary.LittleEndian.Uint64(data[i*8:]))
+			}
+			return values
+		}
+	}
+	return data
 }
