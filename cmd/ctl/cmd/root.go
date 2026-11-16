@@ -45,6 +45,8 @@ func NewRoot(ctx context.Context, gitsha string) *cobra.Command {
 		NewVersionCmd(ctx, gitsha),
 		NewDecodeCmd(ctx),
 		NewAnalyzeCmd(ctx),
+		NewDumpCmd(ctx),
+		NewInfoCmd(ctx),
 	)
 	pf := cmd.PersistentFlags()
 	pf.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
@@ -113,7 +115,10 @@ func NewDecodeCmd(ctx context.Context) *cobra.Command {
 				in = f
 				defer f.Close()
 			}
-			dataset, _ := dicos.Parse(in)
+			dataset, err := dicos.Parse(in)
+			if err != nil {
+				return fmt.Errorf("parsing %s: %w", dcsPath, err)
+			}
 			switch uioType, _ := cmd.Flags().GetString("format"); uioType {
 			case "text": // Dataset will nicely print the DICOM dataset data out of the box.
 				fmt.Println(dataset)

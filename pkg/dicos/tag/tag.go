@@ -321,30 +321,8 @@ var (
 	TubeAngle              = Tag{0x0018, 0x9303} // FD - Tube angle (degrees)
 )
 
-// LookupName returns a human-readable name for common tags
+// LookupName returns the tag's name as dicos.rs reports it, or "" when the
+// tag has no registered name.
 func (t Tag) LookupName() string {
-	switch t {
-	case PatientName:
-		return "PatientName"
-	case PatientID:
-		return "PatientID"
-	case Rows:
-		return "Rows"
-	case Columns:
-		return "Columns"
-	case BitsAllocated:
-		return "BitsAllocated"
-	case PixelData:
-		return "PixelData"
-	case TransferSyntaxUID:
-		return "TransferSyntaxUID"
-	case SOPClassUID:
-		return "SOPClassUID"
-	case Modality:
-		return "Modality"
-	case NumberOfFrames:
-		return "NumberOfFrames"
-	default:
-		return ""
-	}
+	return names[t]
 }

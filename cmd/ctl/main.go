@@ -29,5 +29,7 @@ func main() {
 			slog.String("name", "ctl"),
 			slog.String("git", GitSHA),
 		))
-	cmd.NewRoot(ctx, GitSHA).Execute()
+	if err := cmd.NewRoot(ctx, GitSHA).Execute(); err != nil {
+		os.Exit(1)
+	}
 }
