@@ -34,7 +34,9 @@ import (
 //     Simple lossless compression, fast but lower ratios. Use CodecRLE.
 //
 //   - JPEG 2000:
-//     Wavelet-based compression with lossless/lossy modes. Use CodecJPEG2000.
+//     Lossless reversible-wavelet (ITU-T T.800) compression, 16-bit grayscale
+//     only (as dicos.rs). Use CodecJPEG2000. Streams written by dicos.go
+//     before v0.3.0 (non-standard layout) still decode.
 //
 // Example - Using a codec:
 //
