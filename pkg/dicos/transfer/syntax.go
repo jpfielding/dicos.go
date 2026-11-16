@@ -103,3 +103,13 @@ func (s Syntax) Name() string {
 func FromUID(uid string) Syntax {
 	return Syntax(uid)
 }
+
+// IsJPEG2000 returns true if this is a JPEG 2000 transfer syntax
+func (s Syntax) IsJPEG2000() bool {
+	return s == JPEG2000Lossless || s == JPEG2000
+}
+
+// IsRLE returns true if this is the RLE Lossless transfer syntax
+func (s Syntax) IsRLE() bool {
+	return s == RLELossless
+}

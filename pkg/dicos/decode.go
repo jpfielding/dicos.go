@@ -3,7 +3,6 @@ package dicos
 import (
 	"fmt"
 	"image"
-	"log/slog"
 	"slices"
 )
 
@@ -40,7 +39,7 @@ func DecodeVolume(ds *Dataset) (*Volume, error) {
 		b := img.Bounds()
 		if b.Dx() != cols || b.Dy() != rows {
 			return nil, fmt.Errorf("%w: frame %d decoded to %dx%d, expected %dx%d",
-				ErrInvalidValue, z, b.Dx(), b.Dy(), cols, rows)
+				ErrDimensionMismatch, z, b.Dx(), b.Dy(), cols, rows)
 		}
 		base := len(vol.Data)
 		vol.Data = slices.Grow(vol.Data, frameSize)[:base+frameSize]
@@ -70,70 +69,89 @@ func nativeVolume(rows, cols int, pd *PixelData) (*Volume, error) {
 	return vol, nil
 }
 
-// decodeCompressedFrame detects compression type and decodes
+// decodeCompressedFrame decodes one frame with the codec registered for the
+// transfer syntax. An unknown or uncompressed transfer syntax is an error
+// wrapping ErrUnsupportedTransferSyntax: there is no content-sniffing
+// fallback. Use DecodeFrameSniffed when the transfer syntax is unavailable.
 func decodeCompressedFrame(data []byte, rows, cols int, ts TransferSyntax) (image.Image, error) {
-	if len(data) < 2 {
-		return nil, fmt.Errorf("compressed data too short: %d bytes", len(data))
+	codec := CodecByTransferSyntax(string(ts))
+	if codec == nil {
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedTransferSyntax, string(ts))
 	}
+	return codec.Decode(data, cols, rows)
+}
 
-	// 1. Use Transfer Syntax if available via codec registry
-	tsUID := string(ts)
-	if codec := CodecByTransferSyntax(tsUID); codec != nil {
-		return codec.Decode(data, cols, rows)
+// SniffCodec identifies the codec of a compressed frame from its leading
+// bytes, or returns nil.
+//
+//   - JPEG 2000: the codestream SOC marker FF 4F (the JP2 box format is not
+//     recognised; the decoder is codestream only).
+//   - JPEG-LS / JPEG Lossless: a structured marker walk from the FF D8 SOI to
+//     the first start-of-frame marker (FF F7 is JPEG-LS, FF C3 is JPEG
+//     Lossless), skipping length-prefixed segments and stopping at SOS or on
+//     malformed structure. Entropy-coded data is never scanned.
+//
+// RLE has no reliable signature and is never sniffed.
+func SniffCodec(data []byte) Codec {
+	if len(data) < 2 || data[0] != 0xFF {
+		return nil
 	}
+	switch data[1] {
+	case 0x4F:
+		return CodecJPEG2000
+	case 0xD8:
+		return sniffJPEGSOF(data)
+	}
+	return nil
+}
 
-	// 2. Fallback to sniffing if TS is unknown or generic
-	var sniffedCodec Codec
-
-	// Strict check for JPEG SOI (FF D8) or J2K SOC (FF 4F) at start
-	if len(data) > 2 {
-		// Scan only if starts with FF D8 (JPEG)
-		if data[0] == 0xFF && data[1] == 0xD8 {
-			// Scan for SOF marker to distinguish JPEG-LS vs JPEG Lossless
-			for i := 0; i < len(data)-1; i++ {
-				if data[i] == 0xFF {
-					switch data[i+1] {
-					case 0xF7: // SOF55 - JPEG-LS
-						sniffedCodec = CodecJPEGLS
-					case 0xC3: // SOF3 - JPEG Lossless
-						sniffedCodec = CodecJPEGLi
-					}
-					if sniffedCodec != nil {
-						break
-					}
-				}
-			}
-		} else if data[0] == 0xFF && data[1] == 0x4F {
-			// J2K SOC marker
-			sniffedCodec = CodecJPEG2000
+// sniffJPEGSOF walks JPEG marker segments from the SOI to the first SOF.
+func sniffJPEGSOF(data []byte) Codec {
+	i := 2
+	for {
+		// Each segment starts with 0xFF, possibly repeated as fill bytes.
+		if i >= len(data) || data[i] != 0xFF {
+			return nil
 		}
-	}
-
-	if sniffedCodec != nil {
-		return sniffedCodec.Decode(data, cols, rows)
-	}
-
-	// Check for RLE (header is 64 bytes)
-	if len(data) >= 64 {
-		img, err := CodecRLE.Decode(data, cols, rows)
-		if err == nil {
-			return img, nil
+		for i < len(data) && data[i] == 0xFF {
+			i++
 		}
-
-		slog.Debug("RLE decode attempt failed",
-			slog.Any("error", err),
-			slog.Int("dataLen", len(data)),
-			slog.Int("cols", cols),
-			slog.Int("rows", rows))
+		if i >= len(data) {
+			return nil
+		}
+		marker := data[i]
+		i++
+		switch {
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9):
+			continue // standalone: TEM, RSTn, SOI, EOI
+		case marker == 0xDA:
+			return nil // SOS before any SOF
+		case marker == 0xC3:
+			return CodecJPEGLi
+		case marker == 0xF7:
+			return CodecJPEGLS
+		}
+		if i+1 >= len(data) {
+			return nil
+		}
+		segLen := int(data[i])<<8 | int(data[i+1])
+		if segLen < 2 || i+segLen > len(data) {
+			return nil
+		}
+		i += segLen
 	}
+}
 
-	// Fallback: Try JPEG Lossless first (more common in DICOM), then JPEG-LS
-	img, err := CodecJPEGLi.Decode(data, cols, rows)
-	if err == nil {
-		return img, nil
+// DecodeFrameSniffed decodes a compressed frame whose transfer syntax is
+// unknown, choosing the codec with SniffCodec. Prefer the transfer syntax
+// path (DecodeVolume, DecodeFrameData) whenever the syntax is known. An
+// unidentifiable frame is an error wrapping ErrUnsupportedTransferSyntax.
+func DecodeFrameSniffed(data []byte, width, height int) (image.Image, error) {
+	codec := SniffCodec(data)
+	if codec == nil {
+		return nil, fmt.Errorf("%w: unable to identify codec from data signature", ErrUnsupportedTransferSyntax)
 	}
-
-	return CodecJPEGLS.Decode(data, cols, rows)
+	return codec.Decode(data, width, height)
 }
 
 // DecodeFrameData decodes a single frame from pixel data and returns its
@@ -164,7 +182,7 @@ func DecodeFrameData(pd *PixelData, frameIndex int, rows, cols int, ts TransferS
 	b := decoded.Bounds()
 	if b.Dx() != cols || b.Dy() != rows {
 		return nil, fmt.Errorf("%w: frame %d decoded to %dx%d, expected %dx%d",
-			ErrInvalidValue, frameIndex, b.Dx(), b.Dy(), cols, rows)
+			ErrDimensionMismatch, frameIndex, b.Dx(), b.Dy(), cols, rows)
 	}
 	data := make([]uint16, pixelCount)
 	for y := 0; y < rows; y++ {

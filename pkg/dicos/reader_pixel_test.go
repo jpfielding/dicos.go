@@ -243,7 +243,7 @@ func TestDecodeVolume_EncapsulatedDimensionMismatchIsError(t *testing.T) {
 	ds, err := parseBytes(data)
 	require.NoError(t, err)
 	_, err = DecodeVolume(ds)
-	assert.ErrorIs(t, err, ErrInvalidValue)
+	assert.ErrorIs(t, err, ErrDimensionMismatch)
 }
 
 func TestDecodeVolume_NativeMultiFrame(t *testing.T) {
