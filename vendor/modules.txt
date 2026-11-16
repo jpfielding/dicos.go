@@ -7,7 +7,7 @@ github.com/google/uuid
 # github.com/inconshreveable/mousetrap v1.1.0
 ## explicit; go 1.18
 github.com/inconshreveable/mousetrap
-# github.com/jpfielding/jpegs v0.1.1
+# github.com/jpfielding/jpegs v0.2.0
 ## explicit; go 1.25.5
 github.com/jpfielding/jpegs/pkg/compress/jpeg2k
 github.com/jpfielding/jpegs/pkg/compress/jpegli

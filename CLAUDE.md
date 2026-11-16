@@ -46,7 +46,6 @@ go test ./...
 
 # Run tests for a specific package
 go test ./pkg/dicos
-go test ./pkg/compress/jpegls
 
 # Run a single test
 go test -run TestCTImage_BasicWorkflow ./pkg/dicos
@@ -106,33 +105,7 @@ go mod vendor
 
 ### Compression Codecs
 
-**`pkg/compress/jpegls/`** - JPEG-LS codec (lossless/near-lossless)
-- `decoder.go`: Reads JPEG-LS bitstream, parses markers (SOF55, LSE, SOS), decodes using run mode and regular mode
-- `encoder.go`: Writes JPEG-LS bitstream with proper markers and parameters
-- `context.go`: Context modeling for prediction
-- `predictor.go`: JPEG-LS prediction algorithm (uses neighbor pixels)
-- `run_mode.go`: Run-length encoding for flat regions
-- `bitstream.go`: Bit-level I/O operations
-
-**`pkg/compress/jpeg2k/`** - JPEG 2000 codec
-- `jpeg2k.go`: Main entry point for JPEG 2000 decoding
-- `codestream.go`: Parses JPEG 2000 codestream structure
-- `markers.go`: JPEG 2000 marker definitions
-- `dwt.go`: Discrete Wavelet Transform (forward/inverse)
-- `ebcot.go`: Embedded Block Coding with Optimized Truncation (EBCOT) arithmetic coding
-- `mq.go`: MQ arithmetic coder
-- `rct.go`: Reversible Color Transform
-- `tile.go`: Tile-based image processing
-
-**`pkg/compress/jpegli/`** - JPEG Lossless (Process 14) codec
-- `decode.go`: JPEG lossless decoder
-- `encode.go`: JPEG lossless encoder
-- Handles first-order predictor (Huffman-coded)
-
-**`pkg/compress/rle/`** - RLE (Run-Length Encoding) codec
-- `decode.go`: RLE decoder for DICOM RLE format
-- `encode.go`: RLE encoder
-- `packbits.go`: PackBits variant used in some DICOM files
+Codecs live in the separate module `github.com/jpfielding/jpegs` (`pkg/compress/{jpegls,jpeg2k,jpegli,rle}`), vendored here. `pkg/dicos/codec.go` adapts them to the `Codec` interface. JPEG-LS is ITU-T T.87 conformant (matches dicos.rs/CharLS) and still decodes legacy pre-v0.2.0 Go streams. Each decoder exports `MaxDecodedBytes` (default 1 GiB) checked before allocating. Test malformed input only under a hard memory cap and timeout.
 
 ### Command-Line Tool
 
