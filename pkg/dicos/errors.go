@@ -35,7 +35,22 @@ var (
 	// actually present (for example pixel geometry larger than the pixel
 	// data element).
 	ErrInvalidValue = errors.New("dicos: invalid value")
+	// ErrDimensionMismatch: a decoded frame's dimensions differ from the
+	// dimensions the caller declared.
+	ErrDimensionMismatch = errors.New("dicos: dimension mismatch")
 )
+
+// CodecError attributes a codec failure to its backend while keeping the
+// underlying error reachable through errors.Is / errors.As.
+type CodecError struct {
+	Codec string // codec name, e.g. "jpeg-ls"
+	Err   error
+}
+
+func (e *CodecError) Error() string { return fmt.Sprintf("dicos: %s codec: %v", e.Codec, e.Err) }
+
+// Unwrap returns the backend error.
+func (e *CodecError) Unwrap() error { return e.Err }
 
 // UnexpectedTagError reports a structural tag that did not match what the
 // parser expected. It matches ErrUnexpectedTag with errors.Is.

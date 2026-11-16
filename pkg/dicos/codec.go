@@ -2,8 +2,12 @@ package dicos
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"io"
+	"strings"
+
+	"github.com/jpfielding/dicos.go/pkg/dicos/transfer"
 
 	"github.com/jpfielding/jpegs/pkg/compress/jpeg2k"
 	"github.com/jpfielding/jpegs/pkg/compress/jpegli"
@@ -63,98 +67,97 @@ type Codec interface {
 	TransferSyntaxUID() string
 }
 
-// jpegLSCodec implements Codec for JPEG-LS
-type jpegLSCodec struct{}
-
-func (c *jpegLSCodec) Encode(w io.Writer, img image.Image) error {
-	return jpegls.Encode(w, img, nil)
+// codecAdapter bridges a codec package to the Codec interface. Backend
+// failures are wrapped in *CodecError carrying the codec name, and when the
+// caller supplies dimensions the decoded image must match them.
+type codecAdapter struct {
+	name   string
+	ts     string
+	encode func(w io.Writer, img image.Image) error
+	decode func(data []byte, width, height int) (image.Image, error)
 }
 
-func (c *jpegLSCodec) Decode(data []byte, width, height int) (image.Image, error) {
-	return jpegls.Decode(bytes.NewReader(data))
+func (c *codecAdapter) Encode(w io.Writer, img image.Image) error {
+	if err := c.encode(w, img); err != nil {
+		return &CodecError{Codec: c.name, Err: err}
+	}
+	return nil
 }
 
-func (c *jpegLSCodec) Name() string {
-	return "jpeg-ls"
+// Decode decodes one frame. When width and height are both positive the
+// decoded image must have exactly those dimensions, else the error wraps
+// ErrDimensionMismatch.
+func (c *codecAdapter) Decode(data []byte, width, height int) (image.Image, error) {
+	img, err := c.decode(data, width, height)
+	if err != nil {
+		return nil, &CodecError{Codec: c.name, Err: err}
+	}
+	if width > 0 && height > 0 {
+		if b := img.Bounds(); b.Dx() != width || b.Dy() != height {
+			return nil, &CodecError{Codec: c.name, Err: fmt.Errorf("%w: expected %dx%d, got %dx%d",
+				ErrDimensionMismatch, width, height, b.Dx(), b.Dy())}
+		}
+	}
+	return img, nil
 }
 
-func (c *jpegLSCodec) TransferSyntaxUID() string {
-	return "1.2.840.10008.1.2.4.80" // JPEG-LS Lossless
-}
+func (c *codecAdapter) Name() string              { return c.name }
+func (c *codecAdapter) TransferSyntaxUID() string { return c.ts }
 
-// jpegLiCodec implements Codec for JPEG Lossless (Process 14)
-type jpegLiCodec struct{}
+// Registry encodes always use each codec's defaults so the advertised
+// transfer syntax stays truthful for the bytes produced.
+var (
+	jpegLSCodec = &codecAdapter{
+		name:   "jpeg-ls",
+		ts:     string(transfer.JPEGLSLossless),
+		encode: func(w io.Writer, img image.Image) error { return jpegls.Encode(w, img, nil) },
+		decode: func(data []byte, _, _ int) (image.Image, error) { return jpegls.Decode(bytes.NewReader(data)) },
+	}
+	jpegLiCodec = &codecAdapter{
+		name:   "jpeg-li",
+		ts:     string(transfer.JPEGLosslessFirstOrder),
+		encode: func(w io.Writer, img image.Image) error { return jpegli.Encode(w, img, nil) },
+		decode: func(data []byte, _, _ int) (image.Image, error) { return jpegli.Decode(bytes.NewReader(data)) },
+	}
+	rleCodec = &codecAdapter{
+		name:   "rle",
+		ts:     string(transfer.RLELossless),
+		encode: rle.Encode,
+		decode: rle.Decode,
+	}
+	jpeg2kCodec = &codecAdapter{
+		name:   "jpeg-2000",
+		ts:     string(transfer.JPEG2000Lossless),
+		encode: func(w io.Writer, img image.Image) error { return jpeg2k.Encode(w, img, nil) },
+		decode: func(data []byte, _, _ int) (image.Image, error) { return jpeg2k.Decode(bytes.NewReader(data)) },
+	}
+)
 
-func (c *jpegLiCodec) Encode(w io.Writer, img image.Image) error {
-	return jpegli.Encode(w, img, nil)
-}
-
-func (c *jpegLiCodec) Decode(data []byte, width, height int) (image.Image, error) {
-	return jpegli.Decode(bytes.NewReader(data))
-}
-
-func (c *jpegLiCodec) Name() string {
-	return "jpeg-li"
-}
-
-func (c *jpegLiCodec) TransferSyntaxUID() string {
-	return "1.2.840.10008.1.2.4.70" // JPEG Lossless First-Order (Process 14, SV1)
-}
-
-// rleCodec implements Codec for RLE Lossless
-type rleCodec struct{}
-
-func (c *rleCodec) Encode(w io.Writer, img image.Image) error {
-	return rle.Encode(w, img)
-}
-
-func (c *rleCodec) Decode(data []byte, width, height int) (image.Image, error) {
-	return rle.Decode(data, width, height)
-}
-
-func (c *rleCodec) Name() string {
-	return "rle"
-}
-
-func (c *rleCodec) TransferSyntaxUID() string {
-	return "1.2.840.10008.1.2.5" // RLE Lossless
-}
-
-// jpeg2kCodec implements Codec for JPEG 2000
-type jpeg2kCodec struct{}
-
-func (c *jpeg2kCodec) Encode(w io.Writer, img image.Image) error {
-	return jpeg2k.Encode(w, img, nil)
-}
-
-func (c *jpeg2kCodec) Decode(data []byte, width, height int) (image.Image, error) {
-	return jpeg2k.Decode(bytes.NewReader(data))
-}
-
-func (c *jpeg2kCodec) Name() string {
-	return "jpeg-2000"
-}
-
-func (c *jpeg2kCodec) TransferSyntaxUID() string {
-	return "1.2.840.10008.1.2.4.90" // JPEG 2000 Lossless Only
-}
-
-// codecsByName maps codec names to implementations
+// codecsByName maps lower-case codec names and aliases to implementations.
 var codecsByName = map[string]Codec{
-	"jpeg-ls":   &jpegLSCodec{},
-	"jpeg-li":   &jpegLiCodec{},
-	"rle":       &rleCodec{},
-	"jpeg-2000": &jpeg2kCodec{},
-	"jpeg2000":  &jpeg2kCodec{}, // alias
+	"rle":           rleCodec,
+	"jpeg-ls":       jpegLSCodec,
+	"jpegls":        jpegLSCodec,
+	"jpeg-li":       jpegLiCodec,
+	"jpegli":        jpegLiCodec,
+	"jpeg-lossless": jpegLiCodec,
+	"jpeg-2000":     jpeg2kCodec,
+	"jpeg2000":      jpeg2kCodec,
+	"j2k":           jpeg2kCodec,
 }
 
-// codecsByTS maps transfer syntax UIDs to implementations
+// codecsByTS maps transfer syntax UIDs to implementations.
 var codecsByTS = map[string]Codec{
-	"1.2.840.10008.1.2.4.80": &jpegLSCodec{}, // JPEG-LS Lossless
-	"1.2.840.10008.1.2.4.81": &jpegLSCodec{}, // JPEG-LS Near-Lossless
-	"1.2.840.10008.1.2.4.70": &jpegLiCodec{}, // JPEG Lossless First-Order
-	"1.2.840.10008.1.2.5":    &rleCodec{},    // RLE Lossless
-	"1.2.840.10008.1.2.4.90": &jpeg2kCodec{}, // JPEG 2000 Lossless
+	string(transfer.JPEGLSLossless):         jpegLSCodec,
+	string(transfer.JPEGLSNearLossless):     jpegLSCodec,
+	string(transfer.JPEGLossless):           jpegLiCodec,
+	string(transfer.JPEGLosslessFirstOrder): jpegLiCodec,
+	string(transfer.RLELossless):            rleCodec,
+	string(transfer.JPEG2000Lossless):       jpeg2kCodec,
+	// Lossy J2K maps to the lossless-only decoder (as dicos.rs), so lossy
+	// streams fail as unsupported by the codec rather than as an unknown
+	// transfer syntax.
+	string(transfer.JPEG2000): jpeg2kCodec,
 }
 
 // Predefined codec instances for convenience.
@@ -167,19 +170,19 @@ var codecsByTS = map[string]Codec{
 // CodecJPEGLS is the recommended choice for DICOS per NEMA standards, providing
 // excellent compression ratios with lossless quality.
 var (
-	CodecJPEGLS   Codec = codecsByName["jpeg-ls"]   // JPEG-LS Lossless (recommended)
-	CodecJPEGLi   Codec = codecsByName["jpeg-li"]   // JPEG Lossless Process 14
-	CodecRLE      Codec = codecsByName["rle"]       // RLE Lossless
-	CodecJPEG2000 Codec = codecsByName["jpeg-2000"] // JPEG 2000 Lossless
+	CodecJPEGLS   Codec = jpegLSCodec // JPEG-LS Lossless (recommended)
+	CodecJPEGLi   Codec = jpegLiCodec // JPEG Lossless Process 14
+	CodecRLE      Codec = rleCodec    // RLE Lossless
+	CodecJPEG2000 Codec = jpeg2kCodec // JPEG 2000 Lossless
 )
 
-// CodecByName returns a codec by its name identifier.
+// CodecByName returns a codec by its name identifier (case-insensitive).
 //
 // Supported names:
-//   - "jpeg-ls" - JPEG-LS Lossless (recommended for DICOS)
-//   - "jpeg-li" - JPEG Lossless First-Order (Process 14)
+//   - "jpeg-ls", "jpegls" - JPEG-LS Lossless (recommended for DICOS)
+//   - "jpeg-li", "jpegli", "jpeg-lossless" - JPEG Lossless (Process 14)
 //   - "rle" - RLE Lossless
-//   - "jpeg-2000", "jpeg2000" - JPEG 2000 Lossless
+//   - "jpeg-2000", "jpeg2000", "j2k" - JPEG 2000 Lossless
 //
 // Returns nil if the codec name is not recognized.
 //
@@ -190,7 +193,7 @@ var (
 //		log.Fatal("Unknown codec")
 //	}
 func CodecByName(name string) Codec {
-	return codecsByName[name]
+	return codecsByName[strings.ToLower(name)]
 }
 
 // CodecByTransferSyntax returns a codec for the given DICOM Transfer Syntax UID.
@@ -198,9 +201,11 @@ func CodecByName(name string) Codec {
 // Supported transfer syntaxes:
 //   - "1.2.840.10008.1.2.4.80" - JPEG-LS Lossless
 //   - "1.2.840.10008.1.2.4.81" - JPEG-LS Near-Lossless
+//   - "1.2.840.10008.1.2.4.57" - JPEG Lossless (Process 14)
 //   - "1.2.840.10008.1.2.4.70" - JPEG Lossless First-Order (Process 14)
 //   - "1.2.840.10008.1.2.5" - RLE Lossless
 //   - "1.2.840.10008.1.2.4.90" - JPEG 2000 Lossless
+//   - "1.2.840.10008.1.2.4.91" - JPEG 2000 (decoded by the lossless-only codec)
 //
 // Returns nil if the transfer syntax is not supported or is uncompressed
 // (Explicit/Implicit VR Little Endian).

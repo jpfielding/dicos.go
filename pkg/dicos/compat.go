@@ -67,9 +67,6 @@ func DecodeFrame(fi *FrameInfo, rows, cols, bitsAllocated, pixelRep int) (*Nativ
 	pixelCount := bounds.Dx() * bounds.Dy()
 	data := make([]int, pixelCount)
 
-	// Sample a few pixels to debug
-	var minR, maxR uint32 = 0xFFFFFFFF, 0
-
 	// IMPORTANT: Use RGBA() to extract values because our JPEG-LS decoder
 	// writes to the image but Gray16At().Y sometimes returns 0
 	// The analyze tool uses RGBA() and it works correctly
@@ -79,16 +76,8 @@ func DecodeFrame(fi *FrameInfo, rows, cols, bitsAllocated, pixelRep int) (*Nativ
 			r, _, _, _ := decoded.At(x, y).RGBA()
 			// RGBA() returns values in 0-65535 range
 			data[idx] = int(r)
-			if r < minR {
-				minR = r
-			}
-			if r > maxR {
-				maxR = r
-			}
 		}
 	}
-
-	fmt.Printf("DecodeFrame: bounds=%dx%d, minR=%d, maxR=%d\n", bounds.Dx(), bounds.Dy(), minR, maxR)
 
 	return &NativeFrame{
 		rows: bounds.Dy(),
