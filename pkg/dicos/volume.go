@@ -111,40 +111,21 @@ func (v *Volume) MinMax() (min, max uint16) {
 	return
 }
 
-// FromDataset creates a Volume from a Dataset's pixel data
+// VolumeFromDataset creates a Volume from a Dataset's native pixel data.
+// The depth is derived from the samples present, which must fill a whole
+// number of Rows x Columns frames. Encapsulated data needs DecodeVolume.
 func VolumeFromDataset(ds *Dataset) (*Volume, error) {
-	rows := GetRows(ds)
-	cols := GetColumns(ds)
-	numFrames := GetNumberOfFrames(ds)
-
-	if rows == 0 || cols == 0 {
-		return nil, fmt.Errorf("invalid dimensions: %dx%d", cols, rows)
+	rows := ds.Rows()
+	cols := ds.Columns()
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("%w: dimensions %dx%d", ErrInvalidValue, cols, rows)
 	}
-
 	pd, err := ds.GetPixelData()
 	if err != nil {
 		return nil, err
 	}
-
-	vol := NewVolume(cols, rows, numFrames)
-
-	// Copy pixel data
 	if pd.IsEncapsulated() {
-		// Need to decode each frame
-		// TODO: Implement JPEG-LS decoding here
 		return nil, fmt.Errorf("encapsulated pixel data requires decoding - use DecodeVolume")
 	}
-
-	// Native pixel data - copy directly
-	idx := 0
-	for _, frame := range pd.Frames {
-		for _, val := range frame.Data {
-			if idx < len(vol.Data) {
-				vol.Data[idx] = val
-				idx++
-			}
-		}
-	}
-
-	return vol, nil
+	return nativeVolume(rows, cols, pd)
 }
