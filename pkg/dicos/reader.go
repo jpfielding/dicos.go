@@ -3,363 +3,468 @@ package dicos
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
+	"slices"
+
+	"github.com/jpfielding/dicos.go/pkg/dicos/tag"
+	"github.com/jpfielding/dicos.go/pkg/dicos/transfer"
 )
 
-// Reader reads DICOS/DICOM files
+const (
+	// DefaultMaxElementBytes is the per-element length limit used when
+	// Reader.MaxElementBytes is zero (1 GiB).
+	DefaultMaxElementBytes = 1 << 30
+
+	// MaxNestingDepth bounds sequence/item nesting so a crafted file cannot
+	// recurse without limit.
+	MaxNestingDepth = 64
+
+	// undefinedLength is the DICOM sentinel value length.
+	undefinedLength = 0xFFFFFFFF
+
+	// readChunk is the largest single allocation made for a value before its
+	// bytes have actually been read. Larger values grow chunk by chunk, so
+	// memory tracks the bytes present in the stream, not the declared length.
+	readChunk = 1 << 20
+
+	// botReserveCap caps the speculative capacity reserved for Basic Offset
+	// Table entries; the declared BOT length is attacker controlled.
+	botReserveCap = 4096
+)
+
+// Reader reads DICOS/DICOM Part-10 files.
+//
+// The zero value is not usable; create one with NewReader. Configure the
+// exported fields before calling ReadDataset.
 type Reader struct {
+	// MaxElementBytes is the largest declared value length (element body,
+	// fragment, or fixed-length item) the reader accepts. Zero means
+	// DefaultMaxElementBytes. Longer values fail with a *LengthError
+	// wrapping ErrLengthExceedsLimit before anything is allocated.
+	MaxElementBytes int64
+
 	r              io.Reader
-	transferSyntax string
+	offset         int64  // bytes consumed from r
+	transferSyntax string // (0002,0010) as recorded, or the inferred default
+	tsKnown        bool   // transferSyntax was recorded or inferred
 	explicitVR     bool
-	littleEndian   bool
+	inMeta         bool // still inside group 0002
 }
 
-// NewReader creates a new DICOS reader
+// NewReader creates a new DICOS reader over r.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{
-		r:            r,
-		explicitVR:   true,
-		littleEndian: true,
+		r:          r,
+		explicitVR: true,
+		inMeta:     true,
 	}
 }
 
-// Parse reads a complete DICOS file
+// Parse reads a complete DICOS file using the default limits.
 func Parse(r io.Reader) (*Dataset, error) {
-	reader := NewReader(r)
-	return reader.ReadDataset()
+	return NewReader(r).ReadDataset()
 }
 
-// ReadDataset reads the complete dataset
+func (r *Reader) maxElementBytes() int64 {
+	if r.MaxElementBytes > 0 {
+		return r.MaxElementBytes
+	}
+	return DefaultMaxElementBytes
+}
+
+// fill reads up to len(buf) bytes and returns how many were read. A short
+// count with a nil error means the stream ended; any other read error is
+// returned.
+func (r *Reader) fill(buf []byte) (int, error) {
+	n, err := io.ReadFull(r.r, buf)
+	r.offset += int64(n)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		err = nil
+	}
+	return n, err
+}
+
+// readExact reads exactly len(buf) bytes; a short read is a *TruncatedError.
+func (r *Reader) readExact(buf []byte, context string) error {
+	offset := r.offset
+	n, err := r.fill(buf)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", context, err)
+	}
+	if n < len(buf) {
+		return &TruncatedError{Offset: offset, Context: context}
+	}
+	return nil
+}
+
+func (r *Reader) readU16(context string) (uint16, error) {
+	var b [2]byte
+	if err := r.readExact(b[:], context); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint16(b[:]), nil
+}
+
+func (r *Reader) readU32(context string) (uint32, error) {
+	var b [4]byte
+	if err := r.readExact(b[:], context); err != nil {
+		return 0, err
+	}
+	return binary.LittleEndian.Uint32(b[:]), nil
+}
+
+// readBoundaryTag reads a tag at an element boundary. ok is false on a clean
+// end of stream (zero bytes); one to three bytes is a *TruncatedError.
+func (r *Reader) readBoundaryTag(context string) (t Tag, ok bool, err error) {
+	offset := r.offset
+	var b [4]byte
+	n, err := r.fill(b[:])
+	if err != nil {
+		return Tag{}, false, fmt.Errorf("reading %s: %w", context, err)
+	}
+	switch {
+	case n == 0:
+		return Tag{}, false, nil
+	case n < 4:
+		return Tag{}, false, &TruncatedError{Offset: offset, Context: context}
+	}
+	return Tag{Group: binary.LittleEndian.Uint16(b[:2]), Element: binary.LittleEndian.Uint16(b[2:])}, true, nil
+}
+
+// readTagRequired reads a tag that must be present; a clean end of stream
+// here is a truncation.
+func (r *Reader) readTagRequired(context string) (Tag, error) {
+	t, ok, err := r.readBoundaryTag(context)
+	if err != nil {
+		return Tag{}, err
+	}
+	if !ok {
+		return Tag{}, &TruncatedError{Offset: r.offset, Context: context}
+	}
+	return t, nil
+}
+
+// readBody reads a value of declared length n. The length is checked against
+// MaxElementBytes first; the buffer then grows only as bytes actually arrive,
+// so a large declared length with a short stream fails with a truncation
+// after allocating at most about twice the bytes present.
+func (r *Reader) readBody(n uint32, context string) ([]byte, error) {
+	if limit := r.maxElementBytes(); int64(n) > limit {
+		return nil, &LengthError{Length: int64(n), Max: limit, Err: ErrLengthExceedsLimit}
+	}
+	if n <= readChunk {
+		buf := make([]byte, n)
+		if err := r.readExact(buf, context); err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
+	start := r.offset
+	buf := make([]byte, 0, readChunk)
+	for remaining := int(n); remaining > 0; {
+		k := min(remaining, readChunk)
+		buf = slices.Grow(buf, k)
+		tail := buf[len(buf) : len(buf)+k]
+		got, err := r.fill(tail)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", context, err)
+		}
+		if got < k {
+			return nil, &TruncatedError{Offset: start, Context: context}
+		}
+		buf = buf[:len(buf)+k]
+		remaining -= k
+	}
+	return buf, nil
+}
+
+// skipBytes discards n bytes, verifying the full count was consumed.
+func (r *Reader) skipBytes(n uint32, context string) error {
+	offset := r.offset
+	copied, err := io.CopyN(io.Discard, r.r, int64(n))
+	r.offset += copied
+	if copied == int64(n) {
+		return nil
+	}
+	if err != nil && err != io.EOF {
+		return fmt.Errorf("skipping %s: %w", context, err)
+	}
+	return &TruncatedError{Offset: offset, Context: context}
+}
+
+// ReadDataset reads the complete dataset: preamble, magic, File Meta
+// Information, then the dataset proper in its transfer syntax.
 func (r *Reader) ReadDataset() (*Dataset, error) {
-	ds := &Dataset{
-		Elements: make(map[Tag]*Element),
+	var preamble [128]byte
+	if n, err := r.fill(preamble[:]); err != nil {
+		return nil, fmt.Errorf("reading preamble: %w", err)
+	} else if n != len(preamble) {
+		return nil, fmt.Errorf("%w: preamble too short", ErrBadPreamble)
+	}
+	var magic [4]byte
+	if n, err := r.fill(magic[:]); err != nil {
+		return nil, fmt.Errorf("reading DICM magic: %w", err)
+	} else if n != len(magic) || string(magic[:]) != "DICM" {
+		return nil, fmt.Errorf("%w: missing DICM magic number", ErrBadPreamble)
 	}
 
-	// Read preamble (128 bytes) and DICM magic
-	preamble := make([]byte, 128)
-	if _, err := io.ReadFull(r.r, preamble); err != nil {
-		return nil, fmt.Errorf("failed to read preamble: %w", err)
-	}
-
-	magic := make([]byte, 4)
-	if _, err := io.ReadFull(r.r, magic); err != nil {
-		return nil, fmt.Errorf("failed to read DICM magic: %w", err)
-	}
-	if string(magic) != "DICM" {
-		return nil, errors.New("invalid DICOM file: missing DICM magic")
-	}
-
-	// Group 0002 (File Meta Information) is ALWAYS Explicit VR Little Endian
+	// Group 0002 is always Explicit VR Little Endian.
 	r.explicitVR = true
-	r.littleEndian = true
+	r.inMeta = true
 
-	// Read dataset elements
-	for {
-		tag, err := r.readTag()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to read tag: %w", err)
-		}
-
-		// Transition from File Meta to Dataset?
-		if tag.Group != 0x0002 && r.transferSyntax == "" {
-			// If we hit a non-meta tag but haven't seen TransferSyntaxUID yet,
-			// or if we just finished meta group, we need to update settings.
-			// Default to Implicit VR if no File Meta was found
-			r.transferSyntax = "1.2.840.10008.1.2" // Implicit VR Little Endian
-			r.updateTransferSyntax()
-		}
-
-		elem, err := r.readElementWithTag(tag)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read element %v: %w", tag, err)
-		}
-
-		ds.Elements[elem.Tag] = elem
-
-		// If this was TransferSyntaxUID, update settings for the REST of the file
-		if tag.Group == 0x0002 && tag.Element == 0x0010 {
-			if tsStr, ok := elem.Value.(string); ok {
-				r.transferSyntax = tsStr
-				r.updateTransferSyntax()
+	ds := &Dataset{Elements: make(map[Tag]*Element)}
+	err := r.parseElements(0, func(elem *Element) {
+		if elem.Tag == tag.TransferSyntaxUID {
+			if s, ok := elem.Value.(string); ok {
+				// Recorded only; the VR mode switches on leaving group 0002.
+				r.transferSyntax = s
+				r.tsKnown = true
 			}
 		}
+		ds.Elements[elem.Tag] = elem
+	})
+	if err != nil {
+		return nil, err
 	}
 
+	// Materialise an inferred default so ds.TransferSyntax() agrees with the
+	// VR mode the reader actually used. Only when the dataset was entered.
+	if _, ok := ds.Elements[tag.TransferSyntaxUID]; !ok && r.tsKnown {
+		ds.Elements[tag.TransferSyntaxUID] = &Element{Tag: tag.TransferSyntaxUID, VR: "UI", Value: r.transferSyntax}
+	}
 	return ds, nil
 }
 
-// readElementWithTag reads a DICOM element after the tag has been read
-func (r *Reader) readElementWithTag(tag Tag) (*Element, error) {
-	var vr string
-	var vl uint32
-
-	if r.explicitVR {
-		// Read VR (2 bytes)
-		vrBytes := make([]byte, 2)
-		if _, err := io.ReadFull(r.r, vrBytes); err != nil {
-			return nil, err
-		}
-		vr = string(vrBytes)
-
-		// Check if VR uses 4-byte VL or 2-byte VL + 2 reserved bytes
-		if isLongVR(vr) {
-			// Reserved 2 bytes
-			reserved := make([]byte, 2)
-			if _, err := io.ReadFull(r.r, reserved); err != nil {
-				return nil, err
-			}
-			// VL is 4 bytes
-			if err := binary.Read(r.r, binary.LittleEndian, &vl); err != nil {
-				return nil, err
-			}
-		} else {
-			// VL is 2 bytes
-			var vl16 uint16
-			if err := binary.Read(r.r, binary.LittleEndian, &vl16); err != nil {
-				return nil, err
-			}
-			vl = uint32(vl16)
-		}
-	} else {
-		// Implicit VR: VL is always 4 bytes, VR is determined by tag
-		if err := binary.Read(r.r, binary.LittleEndian, &vl); err != nil {
-			return nil, err
-		}
-		vr = getImplicitVR(tag)
+// enterDatasetIfNeeded applies the transfer syntax when the first tag outside
+// group 0002 is seen. Big-endian transfer syntaxes are rejected.
+func (r *Reader) enterDatasetIfNeeded(t Tag) error {
+	if t.Group == 0x0002 || !r.inMeta {
+		return nil
 	}
+	r.inMeta = false
+	if !r.tsKnown {
+		// PS3.5 §10.1: no Transfer Syntax UID means Implicit VR Little Endian.
+		r.transferSyntax = string(transfer.ImplicitVRLittleEndian)
+		r.tsKnown = true
+	}
+	ts := transfer.Syntax(r.transferSyntax)
+	if !ts.IsLittleEndian() {
+		return fmt.Errorf("%w: %s", ErrUnsupportedTransferSyntax, r.transferSyntax)
+	}
+	r.explicitVR = ts.IsExplicitVR()
+	return nil
+}
 
-	// Read value
-	value, err := r.readValue(tag, vr, vl)
+// parseElements reads elements until a clean end of stream, passing each to
+// emit. Group FFFE tags in element position are structural, not data: they
+// are consumed with their 4-byte length (no VR) and dropped, and parsing
+// continues.
+func (r *Reader) parseElements(depth int, emit func(*Element)) error {
+	for {
+		t, ok, err := r.readBoundaryTag("element tag")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if t.Group == 0xFFFE {
+			if err := r.skipDelimiter(t); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := r.enterDatasetIfNeeded(t); err != nil {
+			return err
+		}
+		elem, err := r.readElementWithTag(t, depth)
+		if err != nil {
+			return fmt.Errorf("element %v: %w", t, err)
+		}
+		emit(elem)
+	}
+}
+
+// skipDelimiter consumes a stray group FFFE tag's 4-byte length and any
+// fixed-length body.
+func (r *Reader) skipDelimiter(t Tag) error {
+	n, err := r.readU32("delimiter length")
+	if err != nil {
+		return err
+	}
+	if n == 0 || n == undefinedLength {
+		return nil
+	}
+	if limit := r.maxElementBytes(); int64(n) > limit {
+		return &LengthError{Length: int64(n), Max: limit, Err: ErrLengthExceedsLimit}
+	}
+	return r.skipBytes(n, fmt.Sprintf("delimiter %v body", t))
+}
+
+// readHeader reads the VR and value length following a tag.
+func (r *Reader) readHeader(t Tag) (vr string, vl uint32, err error) {
+	if !r.explicitVR {
+		vl, err = r.readU32("implicit VR length")
+		return getImplicitVR(t), vl, err
+	}
+	var vrb [2]byte
+	if err := r.readExact(vrb[:], "explicit VR header"); err != nil {
+		return "", 0, err
+	}
+	vr = string(vrb[:])
+	if isLongVR(vr) {
+		var reserved [2]byte
+		if err := r.readExact(reserved[:], "explicit VR header"); err != nil {
+			return "", 0, err
+		}
+		vl, err = r.readU32("explicit VR length")
+		return vr, vl, err
+	}
+	vl16, err := r.readU16("explicit VR length")
+	return vr, uint32(vl16), err
+}
+
+// readElementWithTag reads a DICOM element after the tag has been read.
+func (r *Reader) readElementWithTag(t Tag, depth int) (*Element, error) {
+	vr, vl, err := r.readHeader(t)
 	if err != nil {
 		return nil, err
 	}
-
-	return &Element{
-		Tag:   tag,
-		VR:    vr,
-		Value: value,
-	}, nil
-}
-
-// readTag reads a DICOM tag
-func (r *Reader) readTag() (Tag, error) {
-	var group, element uint16
-	if err := binary.Read(r.r, binary.LittleEndian, &group); err != nil {
-		return Tag{}, err
-	}
-	if err := binary.Read(r.r, binary.LittleEndian, &element); err != nil {
-		return Tag{}, err
-	}
-	return Tag{Group: group, Element: element}, nil
-}
-
-// readValue reads the value based on VR and VL
-func (r *Reader) readValue(tag Tag, vr string, vl uint32) (interface{}, error) {
-	// Handle undefined length
-	if vl == 0xFFFFFFFF {
-		return r.readUndefinedLengthValue(tag, vr)
-	}
-
-	// Read fixed-length value
-	data := make([]byte, vl)
-	if _, err := io.ReadFull(r.r, data); err != nil {
+	value, err := r.readValue(t, vr, vl, depth)
+	if err != nil {
 		return nil, err
 	}
+	return &Element{Tag: t, VR: vr, Value: value}, nil
+}
 
-	// Parse based on VR
+// readValue reads the value based on VR and VL.
+func (r *Reader) readValue(t Tag, vr string, vl uint32, depth int) (interface{}, error) {
+	if vl == undefinedLength {
+		return r.readUndefinedLengthValue(t, depth)
+	}
+	data, err := r.readBody(vl, "element value")
+	if err != nil {
+		return nil, err
+	}
 	return parseValue(vr, data)
 }
 
-// readUndefinedLengthValue handles pixel data and sequences with undefined length
-func (r *Reader) readUndefinedLengthValue(tag Tag, _ string) (interface{}, error) {
-	// This is typically used for encapsulated pixel data
-	if tag.Group == 0x7FE0 && tag.Element == 0x0010 {
+// readUndefinedLengthValue handles encapsulated pixel data and sequences
+// with undefined length.
+func (r *Reader) readUndefinedLengthValue(t Tag, depth int) (interface{}, error) {
+	if t == tag.PixelData {
 		return r.readEncapsulatedPixelData()
 	}
-
-	// Handle sequences with undefined length (VR = SQ)
-	// Skip the entire sequence by reading until Sequence Delimitation Item
-	return r.skipUndefinedLengthSequence()
+	// Skip the sequence by reading until the Sequence Delimitation Item.
+	return nil, r.skipUndefinedLength(depth)
 }
 
-// skipUndefinedLengthSequence skips over a sequence with undefined length
-// Reads until Sequence Delimitation Item (FFFE,E0DD)
-func (r *Reader) skipUndefinedLengthSequence() (interface{}, error) {
+// skipUndefinedLength skips an undefined-length value up to and including
+// its Sequence Delimitation Item.
+func (r *Reader) skipUndefinedLength(depth int) error {
+	if depth >= MaxNestingDepth {
+		return fmt.Errorf("%w (%d)", ErrNestingTooDeep, MaxNestingDepth)
+	}
 	for {
-		itemTag, err := r.readTag()
+		t, err := r.readTagRequired("skipped sequence")
 		if err != nil {
-			if err == io.EOF {
-				return nil, nil // End of file is OK
-			}
-			return nil, fmt.Errorf("reading sequence item tag: %w", err)
+			return err
 		}
-
-		// Check for sequence/item delimiters (these have 4-byte zero length, no VR)
-		if itemTag.Group == 0xFFFE {
-			var delimLen uint32
-			if err := binary.Read(r.r, binary.LittleEndian, &delimLen); err != nil {
-				return nil, fmt.Errorf("reading delimiter length: %w", err)
+		if t.Group == 0xFFFE {
+			n, err := r.readU32("skipped item length")
+			if err != nil {
+				return err
 			}
-
-			switch itemTag.Element {
-			case 0xE0DD: // Sequence Delimitation
-				return nil, nil
-			case 0xE00D: // Item Delimitation
-				// Continue reading
+			switch {
+			case t == tag.SequenceDelimitationItem:
+				return nil
+			case t == tag.ItemDelimitationItem:
 				continue
-			case 0xE000: // Item Start
-				if delimLen != 0xFFFFFFFF && delimLen > 0 {
-					// Fixed length item - skip entire content
-					if _, err := io.CopyN(io.Discard, r.r, int64(delimLen)); err != nil {
-						return nil, fmt.Errorf("skipping item data: %w", err)
-					}
+			case n == undefinedLength:
+				if err := r.skipUndefinedLength(depth + 1); err != nil {
+					return err
 				}
-				// Undefined length items - continue reading nested elements
-				continue
+			case n > 0:
+				if err := r.skipBytes(n, "skipped item body"); err != nil {
+					return err
+				}
 			}
+			continue
 		}
-
-		// Regular element - parse VR and skip
-		var vl uint32
-		if r.explicitVR {
-			var vrBytes [2]byte
-			if _, err := io.ReadFull(r.r, vrBytes[:]); err != nil {
-				return nil, fmt.Errorf("reading VR: %w", err)
-			}
-			vr := string(vrBytes[:])
-
-			if isLongVR(vr) {
-				// Skip 2 reserved bytes, then 4-byte length
-				var reserved uint16
-				binary.Read(r.r, binary.LittleEndian, &reserved)
-				binary.Read(r.r, binary.LittleEndian, &vl)
-			} else {
-				// 2-byte length
-				var vl16 uint16
-				binary.Read(r.r, binary.LittleEndian, &vl16)
-				vl = uint32(vl16)
-			}
-		} else {
-			// Implicit VR - 4 byte length
-			binary.Read(r.r, binary.LittleEndian, &vl)
+		_, vl, err := r.readHeader(t)
+		if err != nil {
+			return err
 		}
-
-		// Skip element value
-		if vl != 0xFFFFFFFF && vl > 0 {
-			if _, err := io.CopyN(io.Discard, r.r, int64(vl)); err != nil {
-				return nil, fmt.Errorf("skipping element value: %w", err)
+		switch {
+		case vl == undefinedLength:
+			if err := r.skipUndefinedLength(depth + 1); err != nil {
+				return err
 			}
-		} else if vl == 0xFFFFFFFF {
-			// Nested undefined length - recursively skip
-			if _, err := r.skipUndefinedLengthSequence(); err != nil {
-				return nil, err
+		case vl > 0:
+			if err := r.skipBytes(vl, "skipped element body"); err != nil {
+				return err
 			}
 		}
 	}
 }
 
-// readEncapsulatedPixelData reads encapsulated (compressed) pixel data
+// readEncapsulatedPixelData reads encapsulated (compressed) pixel data: the
+// Basic Offset Table item, then fragment items until the Sequence
+// Delimitation Item.
 func (r *Reader) readEncapsulatedPixelData() (*PixelData, error) {
-	pd := &PixelData{
-		Frames: []Frame{},
-	}
+	pd := &PixelData{Frames: []Frame{}}
 
-	// Read Basic Offset Table (Item Tag FFFE,E000)
-	botTag, err := r.readTag()
+	botTag, err := r.readTagRequired("basic offset table")
 	if err != nil {
 		return nil, err
 	}
-	if botTag.Group != 0xFFFE || botTag.Element != 0xE000 {
-		return nil, fmt.Errorf("expected BOT item tag, got %v", botTag)
+	if botTag != tag.Item {
+		return nil, &UnexpectedTagError{Expected: tag.Item, Got: botTag, Context: "basic offset table"}
 	}
-
-	var botLength uint32
-	if err := binary.Read(r.r, binary.LittleEndian, &botLength); err != nil {
+	botLen, err := r.readU32("basic offset table length")
+	if err != nil {
 		return nil, err
 	}
-
-	// Read BOT offsets
-	if botLength > 0 {
-		numOffsets := botLength / 4
-		pd.Offsets = make([]uint32, numOffsets)
-		for i := range pd.Offsets {
-			if err := binary.Read(r.r, binary.LittleEndian, &pd.Offsets[i]); err != nil {
+	if botLen > 0 {
+		// Never reserve from the declared length; each entry is read, so a
+		// bogus count fails on the first missing entry.
+		num := botLen / 4
+		pd.Offsets = make([]uint32, 0, min(num, botReserveCap))
+		for range num {
+			off, err := r.readU32("basic offset table entry")
+			if err != nil {
 				return nil, err
 			}
+			pd.Offsets = append(pd.Offsets, off)
 		}
 	}
 
-	// Read frames until Sequence Delimitation Item
 	for {
-		itemTag, err := r.readTag()
+		t, err := r.readTagRequired("encapsulated pixel data")
 		if err != nil {
 			return nil, err
 		}
-
-		// Check for Sequence Delimitation Item (FFFE,E0DD)
-		if itemTag.Group == 0xFFFE && itemTag.Element == 0xE0DD {
-			// Read and discard length (should be 0)
-			var delimLength uint32
-			if err := binary.Read(r.r, binary.LittleEndian, &delimLength); err != nil {
+		if t == tag.SequenceDelimitationItem {
+			if _, err := r.readU32("pixel data delimiter length"); err != nil {
 				return nil, err
 			}
-			break
+			return pd, nil
 		}
-
-		// Regular Item (FFFE,E000)
-		if itemTag.Group != 0xFFFE || itemTag.Element != 0xE000 {
-			return nil, fmt.Errorf("expected item tag, got %v", itemTag)
+		if t != tag.Item {
+			return nil, &UnexpectedTagError{Expected: tag.Item, Got: t, Context: "encapsulated pixel data"}
 		}
-
-		var itemLength uint32
-		if err := binary.Read(r.r, binary.LittleEndian, &itemLength); err != nil {
+		n, err := r.readU32("encapsulated frame length")
+		if err != nil {
 			return nil, err
 		}
-
-		// Read frame data
-		frameData := make([]byte, itemLength)
-		if _, err := io.ReadFull(r.r, frameData); err != nil {
+		data, err := r.readBody(n, "encapsulated frame")
+		if err != nil {
 			return nil, err
 		}
-
-		pd.Frames = append(pd.Frames, Frame{
-			CompressedData: frameData,
-		})
-	}
-
-	return pd, nil
-}
-
-// updateTransferSyntax updates reader settings based on transfer syntax
-func (r *Reader) updateTransferSyntax() {
-	switch r.transferSyntax {
-	case "1.2.840.10008.1.2": // Implicit VR Little Endian
-		r.explicitVR = false
-		r.littleEndian = true
-	case "1.2.840.10008.1.2.1": // Explicit VR Little Endian
-		r.explicitVR = true
-		r.littleEndian = true
-	case "1.2.840.10008.1.2.4.80": // JPEG-LS Lossless
-		r.explicitVR = true
-		r.littleEndian = true
-	case "1.2.840.10008.1.2.4.70": // JPEG Lossless (Process 14 SV1)
-		r.explicitVR = true
-		r.littleEndian = true
-	case "1.2.840.10008.1.2.5": // RLE Lossless
-		r.explicitVR = true
-		r.littleEndian = true
-	case "1.2.840.10008.1.2.4.90", "1.2.840.10008.1.2.4.91": // JPEG 2000
-		r.explicitVR = true
-		r.littleEndian = true
+		pd.Frames = append(pd.Frames, Frame{CompressedData: data})
 	}
 }
-
-// Helper functions
 
 // isLongVR returns true if VR uses 4-byte VL (OB, OD, OF, OL, OW, SQ, UC, UR, UT, UN)
 func isLongVR(vr string) bool {
