@@ -215,25 +215,21 @@ func TestParse_TDRSequencesRoundTrip(t *testing.T) {
 	ds, err := Parse(&buf)
 	require.NoError(t, err)
 
-	// GetVR has no dictionary entry for several TDR tags, so the builder
-	// writes them as UN; they read back as their raw (padded) bytes.
+	// TDR tags carry their dictionary VRs, so values read back typed.
 	refs := sequenceItems(t, ds, tag.ReferencedImageSequence)
 	require.Len(t, refs, 1)
-	assert.Equal(t, padStr("1.2.3.4.5"), refs[0].Elements[tag.ReferencedSOPInstanceUID].Value)
+	assert.Equal(t, "UI", refs[0].Elements[tag.ReferencedSOPInstanceUID].VR)
+	assert.Equal(t, "1.2.3.4.5", refs[0].Elements[tag.ReferencedSOPInstanceUID].Value)
 
 	ptos := sequenceItems(t, ds, tag.PTOSequence)
 	require.Len(t, ptos, 2)
-	assert.Equal(t, padStr("KNIFE"), ptos[0].Elements[tag.ThreatCategoryDescription].Value)
-	assert.Equal(t, padStr("LIQUID"), ptos[1].Elements[tag.ThreatCategoryDescription].Value)
+	assert.Equal(t, "KNIFE", ptos[0].Elements[tag.ThreatCategoryDescription].Value)
+	assert.Equal(t, "LIQUID", ptos[1].Elements[tag.ThreatCategoryDescription].Value)
 	assert.NotContains(t, ptos[1].Elements, tag.PTORepresentationSequence)
 
 	reps := sequenceItems(t, ptos[0], tag.PTORepresentationSequence)
 	require.Len(t, reps, 1)
-	tl, ok := reps[0].Elements[tag.BoundingBoxTopLeft].Value.([]byte)
-	require.True(t, ok)
-	assert.Equal(t, []float32{1, 2, 3}, []float32{
-		math.Float32frombits(binary.LittleEndian.Uint32(tl[0:])),
-		math.Float32frombits(binary.LittleEndian.Uint32(tl[4:])),
-		math.Float32frombits(binary.LittleEndian.Uint32(tl[8:])),
-	})
+	tl := reps[0].Elements[tag.BoundingBoxTopLeft]
+	assert.Equal(t, "FL", tl.VR)
+	assert.Equal(t, []float32{1, 2, 3}, tl.Value)
 }
