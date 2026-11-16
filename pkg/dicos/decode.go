@@ -4,91 +4,69 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"slices"
 )
 
-// DecodeVolume decodes all frames from a Dataset into a Volume
-// Handles both native (uncompressed) and encapsulated (JPEG-LS, JPEG Lossless) pixel data
+// DecodeVolume decodes all frames from a Dataset into a Volume.
+// Handles both native (uncompressed) and encapsulated pixel data.
+//
+// The volume is sized from the data actually present: native samples must
+// fill a whole number of Rows x Columns frames, and every decoded frame must
+// have exactly Rows x Columns pixels. Memory grows frame by frame as frames
+// decode, never from the declared geometry alone.
 func DecodeVolume(ds *Dataset) (*Volume, error) {
-	rows := GetRows(ds)
-	cols := GetColumns(ds)
-
-	if rows == 0 || cols == 0 {
-		return nil, fmt.Errorf("invalid dimensions: %dx%d", cols, rows)
+	rows := ds.Rows()
+	cols := ds.Columns()
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("%w: dimensions %dx%d", ErrInvalidValue, cols, rows)
 	}
 
 	pd, err := ds.GetPixelData()
 	if err != nil {
 		return nil, err
 	}
-
-	// Use actual frame count from pixel data (more reliable than NumberOfFrames tag)
-	numFrames := len(pd.Frames)
-	if numFrames == 0 {
-		numFrames = GetNumberOfFrames(ds) // Fallback to tag
-	}
-	if numFrames == 0 {
-		numFrames = 1
+	if !pd.IsEncapsulated() {
+		return nativeVolume(rows, cols, pd)
 	}
 
-	vol := NewVolume(cols, rows, numFrames)
-
-	if pd.IsEncapsulated() {
-		// Determine Transfer Syntax
-		ts := GetTransferSyntax(ds)
-
-		// Decode each compressed frame
-		for z, frame := range pd.Frames {
-			var img image.Image
-			// This nested check is redundant but kept as per instruction
-			if pd.IsEncapsulated() {
-				decoded, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
-				if err != nil {
-					return nil, fmt.Errorf("decoding frame %d: %w", z, err)
-				}
-				img = decoded
-			} else {
-				// Should not happen
-				return nil, fmt.Errorf("unexpected non-encapsulated data in encapsulated block for frame %d", z)
-			}
-
-			bounds := img.Bounds()
-			imgWidth := bounds.Dx()
-			imgHeight := bounds.Dy()
-			sliceOffset := z * vol.Width * vol.Height
-
-			// Log dimension mismatch if any (first frame only)
-			if z == 0 && (imgWidth != vol.Width || imgHeight != vol.Height) {
-				slog.Warn("Decoded image mismatch",
-					"width", imgWidth, "height", imgHeight,
-					"expected_width", vol.Width, "expected_height", vol.Height)
-			}
-
-			// Extract pixel values using RGBA (proven to work correctly)
-			// Use the actual image dimensions for iteration
-			for y := 0; y < imgHeight && y < vol.Height; y++ {
-				for x := 0; x < imgWidth && x < vol.Width; x++ {
-					r, _, _, _ := img.At(x, y).RGBA() // Use 'img' here
-					// RGBA() returns 0-65535, store as uint16
-					// Use vol.Width for stride (not imgWidth) to match Volume layout
-					if idx := sliceOffset + y*vol.Width + x; idx < len(vol.Data) {
-						vol.Data[idx] = uint16(r)
-					}
-				}
+	frameSize := satMul(rows, cols)
+	vol := NewVolume(cols, rows, 0)
+	ts := ds.TransferSyntax()
+	for z, frame := range pd.Frames {
+		img, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
+		if err != nil {
+			return nil, fmt.Errorf("decoding frame %d: %w", z, err)
+		}
+		b := img.Bounds()
+		if b.Dx() != cols || b.Dy() != rows {
+			return nil, fmt.Errorf("%w: frame %d decoded to %dx%d, expected %dx%d",
+				ErrInvalidValue, z, b.Dx(), b.Dy(), cols, rows)
+		}
+		base := len(vol.Data)
+		vol.Data = slices.Grow(vol.Data, frameSize)[:base+frameSize]
+		for y := 0; y < rows; y++ {
+			for x := 0; x < cols; x++ {
+				r, _, _, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
+				vol.Data[base+y*cols+x] = uint16(r)
 			}
 		}
-	} else {
-		// Native pixel data - copy directly
-		idx := 0
-		for _, frame := range pd.Frames {
-			for _, val := range frame.Data {
-				if idx < len(vol.Data) {
-					vol.Data[idx] = val
-					idx++
-				}
-			}
-		}
+		vol.Depth++
 	}
+	return vol, nil
+}
 
+// nativeVolume builds a Volume from native frames. The samples present must
+// fill a whole, non-zero number of rows x cols frames.
+func nativeVolume(rows, cols int, pd *PixelData) (*Volume, error) {
+	total := pd.TotalPixels()
+	frameSize := satMul(rows, cols)
+	if total == 0 || frameSize > total || total%frameSize != 0 {
+		return nil, fmt.Errorf("%w: %d native samples do not fill whole %dx%d frames",
+			ErrInvalidValue, total, cols, rows)
+	}
+	vol := NewVolume(cols, rows, 0)
+	vol.Depth = total / frameSize
+	vol.Data = pd.GetFlatData()
 	return vol, nil
 }
 
@@ -158,38 +136,43 @@ func decodeCompressedFrame(data []byte, rows, cols int, ts TransferSyntax) (imag
 	return CodecJPEGLS.Decode(data, cols, rows)
 }
 
-// DecodeFrameData decodes a single frame from pixel data
-// Returns raw uint16 pixel values
+// DecodeFrameData decodes a single frame from pixel data and returns its
+// rows*cols uint16 samples. A decoded frame must have exactly rows x cols
+// pixels; a native frame must hold at least rows*cols samples.
 func DecodeFrameData(pd *PixelData, frameIndex int, rows, cols int, ts TransferSyntax) ([]uint16, error) {
 	if frameIndex < 0 || frameIndex >= len(pd.Frames) {
 		return nil, fmt.Errorf("frame index %d out of range (0-%d)", frameIndex, len(pd.Frames)-1)
 	}
-
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("%w: dimensions %dx%d", ErrInvalidValue, cols, rows)
+	}
 	frame := pd.Frames[frameIndex]
-	pixelCount := rows * cols
-	data := make([]uint16, pixelCount)
+	pixelCount := satMul(rows, cols)
 
-	if pd.IsEncapsulated() {
-		decoded, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
-		if err != nil {
-			return nil, fmt.Errorf("decode failed: %w", err)
+	if !pd.IsEncapsulated() {
+		if pixelCount > len(frame.Data) {
+			return nil, fmt.Errorf("%w: frame %d has %d samples, need %d",
+				ErrInvalidValue, frameIndex, len(frame.Data), pixelCount)
 		}
-
-		bounds := decoded.Bounds()
-		for y := 0; y < bounds.Dy() && y < rows; y++ {
-			for x := 0; x < bounds.Dx() && x < cols; x++ {
-				r, _, _, _ := decoded.At(x, y).RGBA()
-				idx := y*cols + x
-				if idx < len(data) {
-					data[idx] = uint16(r)
-				}
-			}
-		}
-	} else {
-		// Native - copy directly
-		copy(data, frame.Data)
+		return slices.Clone(frame.Data[:pixelCount]), nil
 	}
 
+	decoded, err := decodeCompressedFrame(frame.CompressedData, rows, cols, ts)
+	if err != nil {
+		return nil, fmt.Errorf("decode failed: %w", err)
+	}
+	b := decoded.Bounds()
+	if b.Dx() != cols || b.Dy() != rows {
+		return nil, fmt.Errorf("%w: frame %d decoded to %dx%d, expected %dx%d",
+			ErrInvalidValue, frameIndex, b.Dx(), b.Dy(), cols, rows)
+	}
+	data := make([]uint16, pixelCount)
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			r, _, _, _ := decoded.At(b.Min.X+x, b.Min.Y+y).RGBA()
+			data[y*cols+x] = uint16(r)
+		}
+	}
 	return data, nil
 }
 

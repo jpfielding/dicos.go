@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -52,6 +53,7 @@ type Reader struct {
 	tsKnown        bool   // transferSyntax was recorded or inferred
 	explicitVR     bool
 	inMeta         bool // still inside group 0002
+	warnings       []ParseWarning
 }
 
 // NewReader creates a new DICOS reader over r.
@@ -63,9 +65,20 @@ func NewReader(r io.Reader) *Reader {
 	}
 }
 
-// Parse reads a complete DICOS file using the default limits.
+// Parse reads a complete DICOS file using the default limits. Parse
+// warnings are logged at debug level; use a Reader to inspect them.
 func Parse(r io.Reader) (*Dataset, error) {
-	return NewReader(r).ReadDataset()
+	rd := NewReader(r)
+	ds, err := rd.ReadDataset()
+	for _, w := range rd.warnings {
+		slog.Debug("dicos parse warning", "warning", w.String())
+	}
+	return ds, err
+}
+
+// Warnings returns the non-fatal issues found by the last ReadDataset.
+func (r *Reader) Warnings() []ParseWarning {
+	return slices.Clone(r.warnings)
 }
 
 func (r *Reader) maxElementBytes() int64 {
@@ -235,6 +248,7 @@ func (r *Reader) ReadDataset() (*Dataset, error) {
 	if _, ok := ds.Elements[tag.TransferSyntaxUID]; !ok && r.tsKnown {
 		ds.Elements[tag.TransferSyntaxUID] = &Element{Tag: tag.TransferSyntaxUID, VR: "UI", Value: r.transferSyntax}
 	}
+	r.normalizeNativePixelData(ds)
 	return ds, nil
 }
 
@@ -584,6 +598,11 @@ func (r *Reader) readEncapsulatedPixelData() (*PixelData, error) {
 		}
 	}
 
+	// Fragment offsets are relative to the first fragment's Item tag, which
+	// is what BOT entries reference (PS3.5 A.4).
+	var fragments [][]byte
+	var fragOffsets []uint32
+	var running uint32
 	for {
 		t, err := r.readTagRequired("encapsulated pixel data")
 		if err != nil {
@@ -593,7 +612,7 @@ func (r *Reader) readEncapsulatedPixelData() (*PixelData, error) {
 			if _, err := r.readU32("pixel data delimiter length"); err != nil {
 				return nil, err
 			}
-			return pd, nil
+			break
 		}
 		if t != tag.Item {
 			return nil, &UnexpectedTagError{Expected: tag.Item, Got: t, Context: "encapsulated pixel data"}
@@ -606,8 +625,164 @@ func (r *Reader) readEncapsulatedPixelData() (*PixelData, error) {
 		if err != nil {
 			return nil, err
 		}
-		pd.Frames = append(pd.Frames, Frame{CompressedData: data})
+		fragments = append(fragments, data)
+		fragOffsets = append(fragOffsets, running)
+		running = satAddU32(satAddU32(running, 8), n)
 	}
+
+	frames, ok := assembleEncapsulatedFrames(fragments, fragOffsets, pd.Offsets)
+	if !ok {
+		r.warnings = append(r.warnings, ParseWarning{Kind: WarnInvalidOffsetTable})
+	}
+	pd.Frames = make([]Frame, len(frames))
+	for i, f := range frames {
+		pd.Frames[i] = Frame{CompressedData: f}
+	}
+	return pd, nil
+}
+
+func satAddU32(a, b uint32) uint32 {
+	if a > math.MaxUint32-b {
+		return math.MaxUint32
+	}
+	return a + b
+}
+
+// satMul multiplies non-negative ints, saturating at math.MaxInt.
+func satMul(a, b int) int {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > math.MaxInt/b {
+		return math.MaxInt
+	}
+	return a * b
+}
+
+// assembleEncapsulatedFrames groups fragments into frames. An empty BOT means
+// one fragment per frame. A non-empty BOT groups the fragments whose offsets
+// fall in [bot[i], bot[i+1]) into frame i. The BOT must start at 0, be
+// strictly increasing and give every frame at least one fragment; otherwise
+// it is ignored (ok = false) and each fragment becomes a frame. Unlike
+// dicos.rs, overlapping windows are never honoured, so no fragment is copied
+// more than once.
+func assembleEncapsulatedFrames(fragments [][]byte, offsets, bot []uint32) (frames [][]byte, ok bool) {
+	if len(bot) == 0 {
+		return fragments, true
+	}
+	if bot[0] != 0 || len(bot) > len(fragments) {
+		return fragments, false
+	}
+	starts := make([]int, len(bot)) // first fragment index of each frame
+	j := 0
+	for i, start := range bot {
+		if i > 0 && start <= bot[i-1] {
+			return fragments, false
+		}
+		for j < len(offsets) && offsets[j] < start {
+			j++
+		}
+		if j == len(offsets) || offsets[j] != start {
+			return fragments, false // no fragment begins at this offset
+		}
+		starts[i] = j
+	}
+	frames = make([][]byte, len(bot))
+	for i, first := range starts {
+		end := len(fragments)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		if end-first == 1 {
+			frames[i] = fragments[first]
+			continue
+		}
+		size := 0
+		for _, f := range fragments[first:end] {
+			size += len(f)
+		}
+		frame := make([]byte, 0, size)
+		for _, f := range fragments[first:end] {
+			frame = append(frame, f...)
+		}
+		frames[i] = frame
+	}
+	return frames, true
+}
+
+// normalizeNativePixelData converts a parsed native (7FE0,0010) []byte value
+// into *PixelData, following dicos.rs: 8-bit data is one sample per byte,
+// anything else 16-bit little-endian pairs. Frames are derived from the
+// bytes present, never from the declared geometry alone. Without Rows and
+// Columns the raw bytes are left in place.
+func (r *Reader) normalizeNativePixelData(ds *Dataset) {
+	elem, ok := ds.Elements[tag.PixelData]
+	if !ok {
+		return
+	}
+	raw, ok := elem.Value.([]byte)
+	if !ok {
+		return
+	}
+	rows, cols := ds.Rows(), ds.Columns()
+	if rows <= 0 || cols <= 0 {
+		return
+	}
+	numFrames := max(ds.NumberOfFrames(), 1)
+	bits, bitsKnown := bitsAllocated(ds)
+	eightBit := bitsKnown && bits == 8
+
+	var samples []uint16
+	if eightBit {
+		samples = make([]uint16, len(raw))
+		for i, b := range raw {
+			samples[i] = uint16(b)
+		}
+	} else {
+		if !bitsKnown {
+			r.warnings = append(r.warnings, ParseWarning{Kind: WarnBitsAllocatedMissing})
+		}
+		if len(raw)%2 != 0 {
+			r.warnings = append(r.warnings, ParseWarning{Kind: WarnOddPixelDataLength, Length: len(raw)})
+		}
+		samples = make([]uint16, len(raw)/2)
+		for i := range samples {
+			samples[i] = binary.LittleEndian.Uint16(raw[2*i:])
+		}
+	}
+
+	frameSize := satMul(rows, cols)
+	expected := satMul(frameSize, numFrames)
+	// Value lengths are even: one trailing pad byte on an odd-sized 8-bit
+	// image is not a sample.
+	if eightBit && expected%2 == 1 && len(samples) == expected+1 {
+		samples = samples[:expected]
+	}
+
+	pd := &PixelData{}
+	switch {
+	case numFrames > 1 && len(samples) == expected:
+		pd.Frames = make([]Frame, numFrames)
+		for i := range pd.Frames {
+			lo, hi := i*frameSize, (i+1)*frameSize
+			pd.Frames[i] = Frame{Data: samples[lo:hi:hi]}
+		}
+	default:
+		if len(samples) != expected {
+			r.warnings = append(r.warnings, ParseWarning{Kind: WarnPixelCountMismatch, Actual: len(samples), Expected: expected})
+		}
+		pd.Frames = []Frame{{Data: samples}}
+	}
+	elem.Value = pd
+}
+
+// bitsAllocated returns BitsAllocated (0028,0100) and whether it is present.
+func bitsAllocated(ds *Dataset) (int, bool) {
+	elem, ok := ds.Elements[tag.BitsAllocated]
+	if !ok {
+		return 0, false
+	}
+	return elem.GetInt()
 }
 
 // isLongVR returns true if VR uses 4-byte VL (OB, OD, OF, OL, OW, SQ, UC, UR, UT, UN)

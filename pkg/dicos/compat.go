@@ -151,9 +151,9 @@ func GetDecodedPixelData(ds *Dataset) ([]uint16, error) {
 	// Create FrameInfo
 	fi := ConvertToFrameInfo(pd, rows, cols)
 
-	// Decode all frames
-	pixelCount := rows * cols * len(fi)
-	result := make([]uint16, 0, pixelCount)
+	// Decode all frames; grow with the decoded data rather than reserving
+	// from the declared geometry.
+	var result []uint16
 
 	for _, f := range fi {
 		decodedFrame, err := DecodeFrame(f, rows, cols, bitsAllocated, pixelRep)

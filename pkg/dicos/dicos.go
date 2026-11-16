@@ -25,9 +25,9 @@ package dicos
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -512,7 +512,8 @@ func (ds *Dataset) GetPixelData() (*PixelData, error) {
 		return pd, nil
 	}
 
-	// Case 2: Uncompressed data
+	// Case 2: uncompressed data held as raw bytes or samples (hand-built
+	// datasets; parsed files are normalised to *PixelData by the reader).
 	var u16Raw []uint16
 	var byteRaw []byte
 
@@ -525,74 +526,53 @@ func (ds *Dataset) GetPixelData() (*PixelData, error) {
 		return nil, fmt.Errorf("pixel data element has unexpected type: %T", elem.Value)
 	}
 
-	// Get dimensions for conversion
-	rows := GetRows(ds)
-	cols := GetColumns(ds)
-	numFrames := GetNumberOfFrames(ds)
-	bitsAllocated := GetBitsAllocated(ds)
-
-	slog.Debug("Converting uncompressed pixel data",
-		slog.Int("rows", rows),
-		slog.Int("cols", cols),
-		slog.Int("numFrames", numFrames),
-		slog.Int("bitsAllocated", bitsAllocated),
-		slog.String("type", fmt.Sprintf("%T", elem.Value)))
-
-	if rows == 0 || cols == 0 {
-		return nil, fmt.Errorf("invalid dimensions for pixel data conversion: %dx%d", rows, cols)
+	rows := ds.Rows()
+	cols := ds.Columns()
+	numFrames := ds.NumberOfFrames()
+	if rows <= 0 || cols <= 0 {
+		return nil, fmt.Errorf("%w: pixel data dimensions %dx%d", ErrInvalidValue, rows, cols)
+	}
+	if numFrames <= 0 {
+		return nil, fmt.Errorf("%w: NumberOfFrames %d", ErrInvalidValue, numFrames)
 	}
 
-	pd := &PixelData{
-		Frames: make([]Frame, numFrames),
+	// 8-bit data is one sample per byte; anything else is 16-bit LE pairs.
+	bytesPerPixel := 2
+	if ds.BitsAllocated() == 8 {
+		bytesPerPixel = 1
+	}
+	pixelsPerFrame := satMul(rows, cols)
+	totalPixels := satMul(pixelsPerFrame, numFrames)
+
+	// Check the declared geometry against the data actually held before
+	// allocating anything sized by it.
+	if u16Raw != nil {
+		if totalPixels > len(u16Raw) {
+			return nil, fmt.Errorf("%w: pixel data truncated: %dx%dx%d needs %d samples, have %d",
+				ErrInvalidValue, cols, rows, numFrames, totalPixels, len(u16Raw))
+		}
+	} else if need := satMul(totalPixels, bytesPerPixel); need > len(byteRaw) {
+		return nil, fmt.Errorf("%w: pixel data truncated: %dx%dx%d needs %d bytes, have %d",
+			ErrInvalidValue, cols, rows, numFrames, need, len(byteRaw))
 	}
 
-	bytesPerPixel := (bitsAllocated + 7) / 8
-	pixelsPerFrame := rows * cols
-	frameSizeInBytes := pixelsPerFrame * bytesPerPixel
-
-	slog.Debug("Calculated frame metrics",
-		slog.Int("bytesPerPixel", bytesPerPixel),
-		slog.Int("frameSizeInBytes", frameSizeInBytes),
-		slog.Int("pixelsPerFrame", pixelsPerFrame))
-
-	for i := 0; i < numFrames; i++ {
-		u16Data := make([]uint16, pixelsPerFrame)
-
-		if len(u16Raw) > 0 {
-			start := i * pixelsPerFrame
-			end := start + pixelsPerFrame
-			if end > len(u16Raw) {
-				return nil, fmt.Errorf("pixel data truncated: expected %d pixels for %d frames, got %d", numFrames*pixelsPerFrame, numFrames, len(u16Raw))
-			}
-			copy(u16Data, u16Raw[start:end])
-		} else if len(byteRaw) > 0 {
-			start := i * frameSizeInBytes
-			end := start + frameSizeInBytes
-			if end > len(byteRaw) {
-				return nil, fmt.Errorf("pixel data truncated: expected %d bytes for %d frames, got %d", numFrames*frameSizeInBytes, numFrames, len(byteRaw))
-			}
-
-			frameData := byteRaw[start:end]
-			if bytesPerPixel == 2 {
-				for j := 0; j < pixelsPerFrame; j++ {
-					if j*2+1 < len(frameData) {
-						u16Data[j] = uint16(frameData[j*2]) | (uint16(frameData[j*2+1]) << 8)
-					}
-				}
-			} else {
-				for j := 0; j < pixelsPerFrame; j++ {
-					if j < len(frameData) {
-						u16Data[j] = uint16(frameData[j])
-					}
+	pd := &PixelData{Frames: make([]Frame, numFrames)}
+	for i := range pd.Frames {
+		data := make([]uint16, pixelsPerFrame)
+		if u16Raw != nil {
+			copy(data, u16Raw[i*pixelsPerFrame:])
+		} else {
+			frame := byteRaw[i*pixelsPerFrame*bytesPerPixel:]
+			for j := range data {
+				if bytesPerPixel == 2 {
+					data[j] = binary.LittleEndian.Uint16(frame[2*j:])
+				} else {
+					data[j] = uint16(frame[j])
 				}
 			}
 		}
-
-		pd.Frames[i] = Frame{
-			Data: u16Data,
-		}
+		pd.Frames[i] = Frame{Data: data}
 	}
-
 	return pd, nil
 }
 
